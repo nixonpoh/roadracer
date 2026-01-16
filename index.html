@@ -29,20 +29,6 @@
 </head>
 <body>
 
-<!-- On-screen error panel (prevents “silent black screen”) -->
-<div id="err" style="position:fixed;inset:0;background:#000;color:#0f0;padding:12px;font:12px/1.4 monospace;white-space:pre-wrap;display:none;z-index:9999"></div>
-<script>
-  window.onerror = function (msg, src, line, col, err) {
-    const el = document.getElementById('err');
-    el.style.display = 'block';
-    el.textContent =
-      "JS ERROR:\n" + msg +
-      "\n\nSource: " + src +
-      "\nLine: " + line + " Col: " + col +
-      (err && err.stack ? "\n\n" + err.stack : "");
-  };
-</script>
-
 <script>
 const W = 360;
 const H = 640;
@@ -65,9 +51,13 @@ let gameOver = false;
 let road1, road2;
 let roadScale = 1;
 
-// ✅ TIME-BASED SPEEDS (pixels per second)
-let roadScrollSpeed = 0;     // px/sec
-let enemySpeed = 0;          // px/sec
+// ✅ TIME-BASED SPEEDS (px/sec)
+let roadScrollSpeed = 0;
+let enemySpeed = 0;
+
+// ✅ Base pacing (tweak these)
+const BASE_ROAD_SPEED = 360;          // was 180 (too slow)
+const ENEMY_ROAD_GAP = 70;            // enemy is only slightly faster than road
 
 // spawn + difficulty
 let nextSpawnAt = 0;
@@ -78,7 +68,7 @@ let lastSpawnLaneIndex = -1;
 // enemy skins
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// ✅ Smooth tilt steering (calibration + anti-teleport), no auto-centering
+// tilt steering
 let rawGamma = 0;
 let gammaZero = 0;
 let gammaFiltered = 0;
@@ -131,7 +121,7 @@ function create() {
 
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
-  // block touch from doing browser-like behavior
+  // reduce webview “touch = performance change” side-effects
   this.input.mouse?.disableContextMenu?.();
   this.input.addPointer(1);
 
@@ -146,7 +136,11 @@ function create() {
 }
 
 function update(time, delta) {
-  const dt = Math.min(delta / 1000, 0.05);
+  // ✅ IMPORTANT FIX:
+  // Too-small clamp makes the game run slower whenever fps drops,
+  // and then “speed up” when you touch (fps rises).
+  let dt = delta / 1000;
+  dt = Math.min(dt, 0.12); // was 0.05 (too strict)
 
   if (playing && !gameOver) {
     scrollRoad(dt);
@@ -166,7 +160,7 @@ function update(time, delta) {
   });
 }
 
-// -------------------- SMOOTH STEERING (no auto-center) --------------------
+// -------------------- STEERING --------------------
 
 function smoothSteer(dt) {
   let g = rawGamma - gammaZero;
@@ -184,7 +178,7 @@ function smoothSteer(dt) {
   car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
-// -------------------- ROAD LOOP (TIME-BASED) --------------------
+// -------------------- ROAD LOOP --------------------
 
 function scrollRoad(dt) {
   const speed = roadScrollSpeed * dt;
@@ -205,40 +199,45 @@ function maybeIncreaseDifficulty() {
     lastDifficultyBumpScore = score;
     difficulty++;
 
-    // px/sec bumps
-    roadScrollSpeed += 25;
-    enemySpeed += 90;
+    // ✅ Road gets faster steadily
+    roadScrollSpeed += 35;
 
+    // ✅ Enemy stays only slightly faster than road
+    enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
+
+    // steering nudges up a bit
     steerMaxSpeed = Math.min(360, steerMaxSpeed + 8);
   }
 }
 
-// -------------------- SPAWNING (CLEAN, NO DUPLICATES) --------------------
+// -------------------- SPAWNING (DISTANCE-BASED) --------------------
 
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  // Spacing: far at start, tighter with difficulty (distance-based)
-  const minDist = Math.max(680 - difficulty * 55, 240); // px
-  const maxDist = Math.max(980 - difficulty * 80, 320); // px
+  // Spacing: far at start, tighter with difficulty
+  // (distance in pixels between spawns)
+  const minDist = Math.max(820 - difficulty * 60, 280);
+  const maxDist = Math.max(1180 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
 
-  // enemySpeed is px/sec → convert distance to ms
+  // convert distance to ms using current enemy speed
   const delay = (dist / enemySpeed) * 1000;
-  nextSpawnAt = timeMs + Math.max(210, delay);
+  nextSpawnAt = timeMs + Math.max(240, delay);
 
-  // Spawn one
+  // spawn one
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  // Doubles: ramps up with difficulty
-  if (difficulty >= 1) {
-    const doubleChance = Math.min(0.12 + difficulty * 0.06, 0.55);
+  // doubles ramp up with difficulty (but not too early)
+  if (difficulty >= 2) {
+    const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.50);
     if (Math.random() < doubleChance) {
       const laneB = pickDifferentLaneIndex(laneA);
 
-      const extraDelayMin = Math.max(80, 180 - difficulty * 10);
-      const extraDelayMax = Math.max(120, 260 - difficulty * 12);
+      // late-game doubles can be closer
+      const extraDelayMin = Math.max(110, 220 - difficulty * 12);
+      const extraDelayMax = Math.max(160, 320 - difficulty * 14);
       const extraDelay = Phaser.Math.Between(extraDelayMin, extraDelayMax);
 
       setTimeout(() => {
@@ -278,9 +277,7 @@ function spawnEnemyInLane(laneIndex) {
   const e = enemies.create(laneX, -120, enemyKey);
   scaleSpriteToWidth(e, 47);
 
-  // Arcade uses px/sec
   e.setVelocityY(enemySpeed);
-
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -296,17 +293,17 @@ function startGame() {
   lastDifficultyBumpScore = 0;
   lastSpawnLaneIndex = -1;
 
-  enemySpeed = 520;
-  roadScrollSpeed = 180;
+  // ✅ Base: road fast, enemy slightly faster
+  roadScrollSpeed = BASE_ROAD_SPEED;
+  enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
 
   enemies.clear(true, true);
   hideOverlay();
 
-  // calibrate center on START
   gammaZero = rawGamma;
   gammaFiltered = 0;
 
-  nextSpawnAt = performance.now() + 850;
+  nextSpawnAt = performance.now() + 900;
 }
 
 function onGameOver() {
@@ -400,7 +397,6 @@ function setupTiltControls() {
     }
   };
 
-  // iOS requires a user gesture. Android ignores this.
   window.addEventListener("click", () => requestIOSPermissionIfNeeded(), { once: true });
 
   window.addEventListener("deviceorientation", (event) => {
