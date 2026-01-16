@@ -1,18 +1,29 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
-<link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#000000">
-
-
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Road Racer</title>
+
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js"></script>
+
   <style>
-    body { margin: 0; background: #000; }
-    canvas { display: block; margin: 0 auto; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;          /* prevent page scroll */
+      height: 100%;
+      width: 100%;
+      touch-action: none;        /* prevent gestures affecting frame pacing */
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      touch-action: none;        /* important on Android WebView */
+    }
   </style>
 </head>
 <body>
@@ -37,10 +48,11 @@ let playing = false;
 let gameOver = false;
 
 let road1, road2;
-let roadScrollSpeed = 0;
 let roadScale = 1;
 
-let enemySpeed = 220;
+// ✅ TIME-BASED SPEEDS (pixels per second)
+let roadScrollSpeed = 0;     // px/sec
+let enemySpeed = 0;          // px/sec
 
 // spawn + difficulty
 let nextSpawnAt = 0;
@@ -51,15 +63,14 @@ let lastSpawnLaneIndex = -1;
 // enemy skins
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// ✅ Smooth tilt steering (with calibration + anti-teleport)
-// No auto-centering in this version.
+// ✅ Smooth tilt steering (calibration + anti-teleport), no auto-centering
 let rawGamma = 0;
 let gammaZero = 0;
 let gammaFiltered = 0;
 
 let neutralDeadzone = 4;
 let steerSensitivity = 0.9;
-let steerMaxSpeed = 260;
+let steerMaxSpeed = 260;   // px/sec
 let steerSmooth = 0.08;
 let maxGammaAbs = 25;
 
@@ -105,6 +116,10 @@ function create() {
 
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
+  // ✅ block touch from doing browser-like behavior
+  this.input.mouse?.disableContextMenu?.();
+  this.input.addPointer(1);
+
   setupTiltControls();
   showStartOverlay.call(this);
 
@@ -116,10 +131,11 @@ function create() {
 }
 
 function update(time, delta) {
-  const dt = Math.min(delta / 1000, 0.033);
+  // ✅ stable dt clamp
+  const dt = Math.min(delta / 1000, 0.05);
 
   if (playing && !gameOver) {
-    scrollRoad();
+    scrollRoad(dt);
     maybeIncreaseDifficulty();
     spawnLogic(time);
     smoothSteer(dt);
@@ -127,6 +143,7 @@ function update(time, delta) {
 
   if (!playing || gameOver) return;
 
+  // ✅ score when enemies exit screen
   enemies.children.iterate((e) => {
     if (e && e.y > H + 140) {
       e.destroy();
@@ -151,17 +168,16 @@ function smoothSteer(dt) {
   const vx = norm * steerMaxSpeed;
 
   car.x += vx * dt;
-
-  // ✅ NO auto-centering here — car stays where it is when tilt goes back to 0
-
   car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
-// -------------------- ROAD LOOP --------------------
+// -------------------- ROAD LOOP (TIME-BASED) --------------------
 
-function scrollRoad() {
-  road1.y += roadScrollSpeed;
-  road2.y += roadScrollSpeed;
+function scrollRoad(dt) {
+  const speed = roadScrollSpeed * dt;
+
+  road1.y += speed;
+  road2.y += speed;
 
   const roadHeight = road1.height * roadScale;
 
@@ -176,8 +192,9 @@ function maybeIncreaseDifficulty() {
     lastDifficultyBumpScore = score;
     difficulty++;
 
-    roadScrollSpeed += 0.35;
-    enemySpeed += 18;
+    // ✅ px/sec bumps
+    roadScrollSpeed += 25;
+    enemySpeed += 90;
 
     steerMaxSpeed = Math.min(360, steerMaxSpeed + 8);
   }
@@ -242,7 +259,10 @@ function spawnEnemyInLane(laneIndex) {
 
   const e = enemies.create(laneX, -120, enemyKey);
   scaleSpriteToWidth(e, 47);
+
+  // ✅ px/sec (Arcade uses px/sec already)
   e.setVelocityY(enemySpeed);
+
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -258,8 +278,9 @@ function startGame() {
   lastDifficultyBumpScore = 0;
   lastSpawnLaneIndex = -1;
 
-  enemySpeed = 220;
-  roadScrollSpeed = 2.2;
+  // ✅ set base speeds in px/sec
+  enemySpeed = 520;
+  roadScrollSpeed = 180;
 
   enemies.clear(true, true);
   hideOverlay();
@@ -304,7 +325,7 @@ function showStartOverlay() {
 }
 
 function showGameOverOverlay() {
-  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0x000000, 0.45);
 
   overlayUI.title = this.add.text(W/2, H/2 - 90, "GAME OVER", {
     fontSize: "32px",
@@ -337,7 +358,11 @@ function makeButton(scene, x, y, label, onClick) {
   }).setOrigin(0.5);
 
   btnBg.setInteractive({ useHandCursor: true });
-  btnBg.on("pointerdown", onClick);
+  btnBg.on("pointerdown", (p) => {
+    // prevent any default interaction weirdness
+    if (p && p.event && p.event.preventDefault) p.event.preventDefault();
+    onClick();
+  });
 
   return { destroy: () => { btnBg.destroy(); btnText.destroy(); } };
 }
@@ -359,12 +384,14 @@ function setupTiltControls() {
     }
   };
 
+  // iOS requires a user gesture. Android ignores this.
   window.addEventListener("click", () => requestIOSPermissionIfNeeded(), { once: true });
 
+  // ✅ keep reading gamma while game is running (fine)
   window.addEventListener("deviceorientation", (event) => {
     if (!playing || gameOver) return;
     rawGamma = event.gamma ?? 0;
-  });
+  }, { passive: true });
 }
 
 // -------------------- HELPERS --------------------
