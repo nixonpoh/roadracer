@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Road Racer</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js"></script>
+  <style>
+    body { margin: 0; background: #000; }
+    canvas { display: block; margin: 0 auto; }
+  </style>
+</head>
+<body>
+
+<script>
+const W = 360;
+const H = 640;
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  physics: { default: "arcade", arcade: { gravity: { y: 0 }, debug: false } },
+  scene: { preload, create, update }
+};
+
+new Phaser.Game(config);
+
+let car, enemies, lanes;
+let score = 0, scoreText;
+let playing = false;
+let gameOver = false;
+
+let road1, road2;
+let roadScrollSpeed = 0;
+let roadScale = 1;
+
+let enemySpeed = 220;
+
+// spawn + difficulty
+let nextSpawnAt = 0;
+let difficulty = 0;
+let lastDifficultyBumpScore = 0;
+let lastSpawnLaneIndex = -1;
+
+// enemy skins
+const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
+
+// Tilt
+let tiltCooldownMs = 130;
+let lastTiltTime = 0;
+let tiltThreshold = 12;
+
+let overlayUI = {};
+
+function preload() {
+  // player + road
+  this.load.image("car", "assets/car.png");
+  this.load.image("road", "assets/road.png");
+
+  // enemies (different colors)
+  this.load.image("enemy_black", "assets/blackcar.png");
+  this.load.image("enemy_blue", "assets/bluecar.png");
+  this.load.image("enemy_orange", "assets/orangecar.png");
+  this.load.image("enemy_green", "assets/greencar.png");
+  this.load.image("enemy_green", "assets/purplecar.png");
+}
+
+function create() {
+  // lane centers (your tuned values)
+  lanes = [70, 180, 280];
+
+  // Road fill (two images for seamless loop)
+  road1 = this.add.image(W/2, H/2, "road");
+  roadScale = Math.max(W / road1.width, H / road1.height);
+  road1.setScale(roadScale);
+
+  road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
+  road2.setScale(roadScale);
+
+  // Player
+  car = this.physics.add.sprite(lanes[1], H - 90, "car");
+  car.setCollideWorldBounds(true);
+
+  // car size (your smaller size)
+  scaleSpriteToWidth(car, 47);
+
+  // Enemies group
+  enemies = this.physics.add.group();
+
+  // Score UI
+  scoreText = this.add.text(10, 10, "Score: 0", {
+    fontSize: "18px",
+    fill: "#ffffff"
+  });
+
+  // Collision
+  this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
+
+  // Tilt
+  setupTiltControls();
+
+  // Start overlay
+  showStartOverlay.call(this);
+}
+
+function update(time) {
+  if (playing && !gameOver) {
+    scrollRoad();
+    maybeIncreaseDifficulty();
+    spawnLogic(time);
+  }
+
+  if (!playing || gameOver) return;
+
+  // keyboard backup
+  const cursors = this.input.keyboard.createCursorKeys();
+  if (Phaser.Input.Keyboard.JustDown(cursors.left)) moveLeft();
+  if (Phaser.Input.Keyboard.JustDown(cursors.right)) moveRight();
+
+  // scoring when enemies pass bottom
+  enemies.children.iterate((e) => {
+    if (e && e.y > H + 140) {
+      e.destroy();
+      score++;
+      scoreText.setText("Score: " + score);
+    }
+  });
+}
+
+// -------------------- ROAD LOOP --------------------
+
+function scrollRoad() {
+  road1.y += roadScrollSpeed;
+  road2.y += roadScrollSpeed;
+
+  const roadHeight = road1.height * roadScale;
+
+  if (road1.y - H/2 >= roadHeight) road1.y = road2.y - roadHeight;
+  if (road2.y - H/2 >= roadHeight) road2.y = road1.y - roadHeight;
+}
+
+// -------------------- DIFFICULTY (more aggressive) --------------------
+
+function maybeIncreaseDifficulty() {
+  // ✅ bump difficulty every 6 points (more aggressive than 8)
+  if (score - lastDifficultyBumpScore >= 6) {
+    lastDifficultyBumpScore = score;
+    difficulty++;
+
+    // faster ramp
+    roadScrollSpeed += 0.35;
+    enemySpeed += 18;
+  }
+}
+
+// -------------------- SPAWNING --------------------
+
+function spawnLogic(timeMs) {
+  if (timeMs < nextSpawnAt) return;
+
+  // ✅ Starts faster & ramps faster (more aggressive)
+  const baseDelay = Math.max(900 - difficulty * 95, 260);
+  const jitter = Phaser.Math.Between(-180, 220);
+
+  const gapChance = Math.min(0.08 + difficulty * 0.015, 0.20);
+  const gapExtra = (Math.random() < gapChance) ? Phaser.Math.Between(80, 200) : 0;
+
+  const delay = Math.max(220, baseDelay + jitter + gapExtra);
+  nextSpawnAt = timeMs + delay;
+
+  // Spawn #1
+  const laneA = pickLaneIndexAvoidRepeat();
+  spawnEnemyInLane(laneA);
+
+  // ✅ Double spawns earlier (difficulty >= 1)
+  const allowDouble = difficulty >= 1;
+  if (allowDouble) {
+    const doubleChance = Math.min(0.12 + difficulty * 0.05, 0.50);
+
+    if (Math.random() < doubleChance) {
+      const laneB = pickDifferentLaneIndex(laneA);
+      const extraDelay = Phaser.Math.Between(120, 260);
+
+      setTimeout(() => {
+        if (playing && !gameOver) spawnEnemyInLane(laneB);
+      }, extraDelay);
+    }
+  }
+}
+
+function pickLaneIndexAvoidRepeat() {
+  let choices = [0, 1, 2];
+  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.75) {
+    choices = choices.filter(i => i !== lastSpawnLaneIndex);
+  }
+  const picked = Phaser.Utils.Array.GetRandom(choices);
+  lastSpawnLaneIndex = picked;
+  return picked;
+}
+
+function pickDifferentLaneIndex(notThisIndex) {
+  let options = [0, 1, 2].filter(i => i !== notThisIndex);
+  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.6) {
+    const options2 = options.filter(i => i !== lastSpawnLaneIndex);
+    if (options2.length > 0) options = options2;
+  }
+  const picked = Phaser.Utils.Array.GetRandom(options);
+  lastSpawnLaneIndex = picked;
+  return picked;
+}
+
+function spawnEnemyInLane(laneIndex) {
+  if (!playing || gameOver) return;
+
+  // ✅ RANDOM COLOR ENEMY
+  const enemyKey = Phaser.Utils.Array.GetRandom(ENEMY_KEYS);
+
+  const laneX = lanes[laneIndex];
+  const e = enemies.create(laneX, -120, enemyKey);
+
+  // size same as player
+  scaleSpriteToWidth(e, 47);
+
+  e.setVelocityY(enemySpeed);
+  e.x += Phaser.Math.Between(-2, 2);
+}
+
+// -------------------- GAME FLOW --------------------
+
+function startGame() {
+  score = 0;
+  scoreText.setText("Score: 0");
+  gameOver = false;
+  playing = true;
+
+  difficulty = 0;
+  lastDifficultyBumpScore = 0;
+  lastSpawnLaneIndex = -1;
+
+  enemySpeed = 220;
+  roadScrollSpeed = 2.2;
+
+  enemies.clear(true, true);
+  hideOverlay();
+
+  nextSpawnAt = performance.now() + 850;
+}
+
+function onGameOver() {
+  if (gameOver) return;
+
+  gameOver = true;
+  playing = false;
+  roadScrollSpeed = 0;
+
+  this.physics.pause();
+  showGameOverOverlay.call(this);
+}
+
+// -------------------- MOVEMENT --------------------
+
+function moveLeft() {
+  const idx = lanes.indexOf(car.x);
+  if (idx > 0) car.x = lanes[idx - 1];
+}
+
+function moveRight() {
+  const idx = lanes.indexOf(car.x);
+  if (idx < lanes.length - 1) car.x = lanes[idx + 1];
+}
+
+// -------------------- UI --------------------
+
+function showStartOverlay() {
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
+
+  overlayUI.title = this.add.text(W/2, H/2 - 90, "ROAD RACER", {
+    fontSize: "32px",
+    fill: "#ffffff"
+  }).setOrigin(0.5);
+
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Tap START • Tilt to change lanes", {
+    fontSize: "14px",
+    fill: "#dddddd"
+  }).setOrigin(0.5);
+
+  overlayUI.btn = makeButton(this, W/2, H/2 + 40, "START", () => {
+    this.physics.resume();
+    startGame.call(this);
+  });
+}
+
+function showGameOverOverlay() {
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
+
+  overlayUI.title = this.add.text(W/2, H/2 - 90, "GAME OVER", {
+    fontSize: "32px",
+    fill: "#ff4444"
+  }).setOrigin(0.5);
+
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, `Final Score: ${score}`, {
+    fontSize: "16px",
+    fill: "#ffffff"
+  }).setOrigin(0.5);
+
+  overlayUI.btn = makeButton(this, W/2, H/2 + 40, "RESTART", () => {
+    this.physics.resume();
+    startGame.call(this);
+  });
+}
+
+function hideOverlay() {
+  Object.values(overlayUI).forEach(o => o && o.destroy && o.destroy());
+  overlayUI = {};
+}
+
+function makeButton(scene, x, y, label, onClick) {
+  const btnBg = scene.add.rectangle(x, y, 170, 54, 0x22c55e, 1)
+    .setStrokeStyle(2, 0xffffff, 1);
+
+  const btnText = scene.add.text(x, y, label, {
+    fontSize: "20px",
+    fill: "#ffffff"
+  }).setOrigin(0.5);
+
+  btnBg.setInteractive({ useHandCursor: true });
+  btnBg.on("pointerdown", onClick);
+
+  return { destroy: () => { btnBg.destroy(); btnText.destroy(); } };
+}
+
+// -------------------- TILT --------------------
+
+function setupTiltControls() {
+  const requestIOSPermissionIfNeeded = async () => {
+    try {
+      if (
+        typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function"
+      ) {
+        const result = await DeviceOrientationEvent.requestPermission();
+        console.log("iOS tilt permission:", result);
+      }
+    } catch (e) {
+      console.log("Tilt permission error:", e);
+    }
+  };
+
+  window.addEventListener("click", () => requestIOSPermissionIfNeeded(), { once: true });
+
+  window.addEventListener("deviceorientation", (event) => {
+    if (!playing || gameOver) return;
+
+    const now = Date.now();
+    if (now - lastTiltTime < tiltCooldownMs) return;
+
+    const gamma = event.gamma ?? 0;
+
+    if (gamma <= -tiltThreshold) { moveLeft(); lastTiltTime = now; }
+    else if (gamma >= tiltThreshold) { moveRight(); lastTiltTime = now; }
+  });
+}
+
+// -------------------- HELPERS --------------------
+
+function scaleSpriteToWidth(sprite, targetWidthPx) {
+  const texW = sprite.width || 1;
+  sprite.setScale(targetWidthPx / texW);
+}
+</script>
+
+</body>
+</html>
