@@ -125,6 +125,28 @@ function create() {
 
   setupTiltControls();
   showStartOverlay.call(this);
+
+
+
+  // ✅ KEYBOARD FALLBACK (desktop testing)
+this.input.keyboard.on("keydown-LEFT", () => {
+  rawGamma = -18;   // simulate tilt left
+});
+
+this.input.keyboard.on("keydown-RIGHT", () => {
+  rawGamma = 18;    // simulate tilt right
+});
+
+this.input.keyboard.on("keyup-LEFT", () => {
+  rawGamma = 0;
+});
+
+this.input.keyboard.on("keyup-RIGHT", () => {
+  rawGamma = 0;
+});
+
+
+
 }
 
 function update(time, delta) {
