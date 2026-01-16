@@ -46,26 +46,28 @@ let lastSpawnLaneIndex = -1;
 // enemy skins
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// ✅ Smooth tilt steering variables
-let tiltGamma = 0;                 // live tilt input (- left, + right)
-let neutralDeadzone = 4;           // degrees where we treat as "center"
-let steerMaxSpeed = 340;           // max px/sec lateral movement
-let steerSensitivity = 1.0;        // multiply tilt strength
-let steerSmooth = 0.12;            // 0..1 smoothing (higher = snappier)
-let steerGammaSmoothed = 0;        // filtered gamma
+// ✅ Smooth tilt steering (with calibration + anti-teleport)
+// No auto-centering in this version.
+let rawGamma = 0;
+let gammaZero = 0;
+let gammaFiltered = 0;
 
-// Lane boundaries (keep car on road)
+let neutralDeadzone = 4;
+let steerSensitivity = 0.9;
+let steerMaxSpeed = 260;
+let steerSmooth = 0.08;
+let maxGammaAbs = 25;
+
+// road bounds
 let minX = 70;
 let maxX = 280;
 
 let overlayUI = {};
 
 function preload() {
-  // player + road
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
 
-  // enemies
   this.load.image("enemy_black", "assets/blackcar.png");
   this.load.image("enemy_blue", "assets/bluecar.png");
   this.load.image("enemy_orange", "assets/orangecar.png");
@@ -73,12 +75,11 @@ function preload() {
 }
 
 function create() {
-  // lanes (your tuned values)
   lanes = [70, 180, 280];
   minX = lanes[0];
   maxX = lanes[2];
 
-  // road fill (two images loop)
+  // road fill loop
   road1 = this.add.image(W/2, H/2, "road");
   roadScale = Math.max(W / road1.width, H / road1.height);
   road1.setScale(roadScale);
@@ -86,9 +87,8 @@ function create() {
   road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
   road2.setScale(roadScale);
 
-  // player
   car = this.physics.add.sprite(lanes[1], H - 90, "car");
-  car.setCollideWorldBounds(false); // we clamp manually to road bounds
+  car.setCollideWorldBounds(false);
   scaleSpriteToWidth(car, 47);
 
   enemies = this.physics.add.group();
@@ -103,15 +103,15 @@ function create() {
   setupTiltControls();
   showStartOverlay.call(this);
 
-  // keyboard backup (smooth)
-  this.input.keyboard.on("keydown-LEFT", () => { tiltGamma = -18; });
-  this.input.keyboard.on("keydown-RIGHT", () => { tiltGamma = 18; });
-  this.input.keyboard.on("keyup-LEFT", () => { tiltGamma = 0; });
-  this.input.keyboard.on("keyup-RIGHT", () => { tiltGamma = 0; });
+  // keyboard fallback (desktop)
+  this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
+  this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
+  this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
+  this.input.keyboard.on("keyup-RIGHT", () => { rawGamma = 0; });
 }
 
 function update(time, delta) {
-  const dt = delta / 1000;
+  const dt = Math.min(delta / 1000, 0.033);
 
   if (playing && !gameOver) {
     scrollRoad();
@@ -131,32 +131,24 @@ function update(time, delta) {
   });
 }
 
-// -------------------- SMOOTH STEERING --------------------
+// -------------------- SMOOTH STEERING (no auto-center) --------------------
 
 function smoothSteer(dt) {
-  // Smooth the tilt value (filters jitter)
-  steerGammaSmoothed = lerp(steerGammaSmoothed, tiltGamma, steerSmooth);
+  let g = rawGamma - gammaZero;
+  g = Phaser.Math.Clamp(g, -maxGammaAbs, maxGammaAbs);
 
-  // Deadzone near center so it doesn't drift
-  let g = steerGammaSmoothed;
-  if (Math.abs(g) < neutralDeadzone) g = 0;
+  gammaFiltered = lerp(gammaFiltered, g, steerSmooth);
 
-  // Convert degrees into -1..1 steering
-  // clamp at +/-25 degrees
-  const norm = Phaser.Math.Clamp(g / 25, -1, 1) * steerSensitivity;
+  let gf = gammaFiltered;
+  if (Math.abs(gf) < neutralDeadzone) gf = 0;
 
-  // target velocity in px/sec
+  const norm = Phaser.Math.Clamp(gf / maxGammaAbs, -1, 1) * steerSensitivity;
   const vx = norm * steerMaxSpeed;
 
-  // Apply smooth motion
   car.x += vx * dt;
 
-  // Auto-centering: if phone is level, gently pull toward center lane
-  if (g === 0) {
-    car.x = lerp(car.x, lanes[1], 0.06);
-  }
+  // ✅ NO auto-centering here — car stays where it is when tilt goes back to 0
 
-  // Clamp to road boundaries
   car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
@@ -172,7 +164,7 @@ function scrollRoad() {
   if (road2.y - H/2 >= roadHeight) road2.y = road1.y - roadHeight;
 }
 
-// -------------------- DIFFICULTY (aggressive) --------------------
+// -------------------- DIFFICULTY --------------------
 
 function maybeIncreaseDifficulty() {
   if (score - lastDifficultyBumpScore >= 6) {
@@ -182,8 +174,7 @@ function maybeIncreaseDifficulty() {
     roadScrollSpeed += 0.35;
     enemySpeed += 18;
 
-    // also slightly increase steering max speed so it still feels responsive later
-    steerMaxSpeed = Math.min(520, steerMaxSpeed + 12);
+    steerMaxSpeed = Math.min(360, steerMaxSpeed + 8);
   }
 }
 
@@ -247,8 +238,6 @@ function spawnEnemyInLane(laneIndex) {
   const e = enemies.create(laneX, -120, enemyKey);
   scaleSpriteToWidth(e, 47);
   e.setVelocityY(enemySpeed);
-
-  // tiny variation
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -269,6 +258,10 @@ function startGame() {
 
   enemies.clear(true, true);
   hideOverlay();
+
+  // calibrate center on START
+  gammaZero = rawGamma;
+  gammaFiltered = 0;
 
   nextSpawnAt = performance.now() + 850;
 }
@@ -294,7 +287,7 @@ function showStartOverlay() {
     fill: "#ffffff"
   }).setOrigin(0.5);
 
-  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Tap START • Tilt to steer smoothly", {
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Hold phone normally, then tap START", {
     fontSize: "14px",
     fill: "#dddddd"
   }).setOrigin(0.5);
@@ -365,7 +358,7 @@ function setupTiltControls() {
 
   window.addEventListener("deviceorientation", (event) => {
     if (!playing || gameOver) return;
-    tiltGamma = event.gamma ?? 0; // store tilt, we smooth it in update()
+    rawGamma = event.gamma ?? 0;
   });
 }
 
