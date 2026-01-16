@@ -5,29 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Road Racer</title>
 
+  <!-- Local Phaser -->
   <script src="assets/phaser.min.js"></script>
-
 
   <style>
     html, body {
       margin: 0;
       padding: 0;
       background: #000;
-      overflow: hidden;          /* prevent page scroll */
+      overflow: hidden;
       height: 100%;
       width: 100%;
-      touch-action: none;        /* prevent gestures affecting frame pacing */
+      touch-action: none;
       -webkit-user-select: none;
       user-select: none;
     }
     canvas {
       display: block;
       margin: 0 auto;
-      touch-action: none;        /* important on Android WebView */
+      touch-action: none;
     }
   </style>
 </head>
 <body>
+
+<!-- On-screen error panel (prevents “silent black screen”) -->
+<div id="err" style="position:fixed;inset:0;background:#000;color:#0f0;padding:12px;font:12px/1.4 monospace;white-space:pre-wrap;display:none;z-index:9999"></div>
+<script>
+  window.onerror = function (msg, src, line, col, err) {
+    const el = document.getElementById('err');
+    el.style.display = 'block';
+    el.textContent =
+      "JS ERROR:\n" + msg +
+      "\n\nSource: " + src +
+      "\nLine: " + line + " Col: " + col +
+      (err && err.stack ? "\n\n" + err.stack : "");
+  };
+</script>
 
 <script>
 const W = 360;
@@ -117,7 +131,7 @@ function create() {
 
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
-  // ✅ block touch from doing browser-like behavior
+  // block touch from doing browser-like behavior
   this.input.mouse?.disableContextMenu?.();
   this.input.addPointer(1);
 
@@ -132,7 +146,6 @@ function create() {
 }
 
 function update(time, delta) {
-  // ✅ stable dt clamp
   const dt = Math.min(delta / 1000, 0.05);
 
   if (playing && !gameOver) {
@@ -144,7 +157,6 @@ function update(time, delta) {
 
   if (!playing || gameOver) return;
 
-  // ✅ score when enemies exit screen
   enemies.children.iterate((e) => {
     if (e && e.y > H + 140) {
       e.destroy();
@@ -193,7 +205,7 @@ function maybeIncreaseDifficulty() {
     lastDifficultyBumpScore = score;
     difficulty++;
 
-    // ✅ px/sec bumps
+    // px/sec bumps
     roadScrollSpeed += 25;
     enemySpeed += 90;
 
@@ -201,52 +213,34 @@ function maybeIncreaseDifficulty() {
   }
 }
 
-// -------------------- SPAWNING --------------------
+// -------------------- SPAWNING (CLEAN, NO DUPLICATES) --------------------
 
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-// --- SPACING: far at start, tighter with difficulty (distance-based) ---
-const minDist = Math.max(680 - difficulty * 55, 240); // px
-const maxDist = Math.max(980 - difficulty * 80, 320); // px
-const dist = Phaser.Math.Between(minDist, maxDist);
+  // Spacing: far at start, tighter with difficulty (distance-based)
+  const minDist = Math.max(680 - difficulty * 55, 240); // px
+  const maxDist = Math.max(980 - difficulty * 80, 320); // px
+  const dist = Phaser.Math.Between(minDist, maxDist);
 
-const delay = (dist / enemySpeed) * 1000;
-nextSpawnAt = timeMs + Math.max(210, delay);
+  // enemySpeed is px/sec → convert distance to ms
+  const delay = (dist / enemySpeed) * 1000;
+  nextSpawnAt = timeMs + Math.max(210, delay);
 
-// spawn one
-const laneA = pickLaneIndexAvoidRepeat();
-spawnEnemyInLane(laneA);
-
-// --- DOUBLES: ramps up with difficulty ---
-const allowDouble = difficulty >= 1;
-if (allowDouble) {
-  const doubleChance = Math.min(0.12 + difficulty * 0.06, 0.55); // up to 55%
-  if (Math.random() < doubleChance) {
-    const laneB = pickDifferentLaneIndex(laneA);
-
-    // make late-game doubles feel "almost simultaneous"
-    const extraDelayMin = Math.max(80, 180 - difficulty * 10);
-    const extraDelayMax = Math.max(120, 260 - difficulty * 12);
-    const extraDelay = Phaser.Math.Between(extraDelayMin, extraDelayMax);
-
-    setTimeout(() => {
-      if (playing && !gameOver) spawnEnemyInLane(laneB);
-    }, extraDelay);
-  }
-}
-
-
-
+  // Spawn one
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  const allowDouble = difficulty >= 1;
-  if (allowDouble) {
-    const doubleChance = Math.min(0.12 + difficulty * 0.05, 0.50);
+  // Doubles: ramps up with difficulty
+  if (difficulty >= 1) {
+    const doubleChance = Math.min(0.12 + difficulty * 0.06, 0.55);
     if (Math.random() < doubleChance) {
       const laneB = pickDifferentLaneIndex(laneA);
-      const extraDelay = Phaser.Math.Between(120, 260);
+
+      const extraDelayMin = Math.max(80, 180 - difficulty * 10);
+      const extraDelayMax = Math.max(120, 260 - difficulty * 12);
+      const extraDelay = Phaser.Math.Between(extraDelayMin, extraDelayMax);
+
       setTimeout(() => {
         if (playing && !gameOver) spawnEnemyInLane(laneB);
       }, extraDelay);
@@ -284,7 +278,7 @@ function spawnEnemyInLane(laneIndex) {
   const e = enemies.create(laneX, -120, enemyKey);
   scaleSpriteToWidth(e, 47);
 
-  // ✅ px/sec (Arcade uses px/sec already)
+  // Arcade uses px/sec
   e.setVelocityY(enemySpeed);
 
   e.x += Phaser.Math.Between(-2, 2);
@@ -302,7 +296,6 @@ function startGame() {
   lastDifficultyBumpScore = 0;
   lastSpawnLaneIndex = -1;
 
-  // ✅ set base speeds in px/sec
   enemySpeed = 520;
   roadScrollSpeed = 180;
 
@@ -349,7 +342,7 @@ function showStartOverlay() {
 }
 
 function showGameOverOverlay() {
-  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0x000000, 0.45);
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
 
   overlayUI.title = this.add.text(W/2, H/2 - 90, "GAME OVER", {
     fontSize: "32px",
@@ -383,7 +376,6 @@ function makeButton(scene, x, y, label, onClick) {
 
   btnBg.setInteractive({ useHandCursor: true });
   btnBg.on("pointerdown", (p) => {
-    // prevent any default interaction weirdness
     if (p && p.event && p.event.preventDefault) p.event.preventDefault();
     onClick();
   });
@@ -411,7 +403,6 @@ function setupTiltControls() {
   // iOS requires a user gesture. Android ignores this.
   window.addEventListener("click", () => requestIOSPermissionIfNeeded(), { once: true });
 
-  // ✅ keep reading gamma while game is running (fine)
   window.addEventListener("deviceorientation", (event) => {
     if (!playing || gameOver) return;
     rawGamma = event.gamma ?? 0;
