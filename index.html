@@ -42,7 +42,7 @@ const BASE_ROAD_SPEED = 360;   // px/sec
 const ENEMY_ROAD_GAP = 70;     // enemy slightly faster than road
 
 // collision tuning (touch = bang)
-const HITBOX_W = 0.7;         // wider hitbox = easier crash
+const HITBOX_W = 0.7;
 const HITBOX_H = 0.8;
 
 const config = {
@@ -88,6 +88,7 @@ let minX, maxX;
 let overlayUI = {};
 
 function preload() {
+  // game
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
 
@@ -95,6 +96,10 @@ function preload() {
   this.load.image("enemy_blue", "assets/bluecar.png");
   this.load.image("enemy_orange", "assets/orangecar.png");
   this.load.image("enemy_green", "assets/greencar.png");
+
+  // ✅ UI (your attached images)
+  this.load.image("ui_start", "assets/ui_start.png");
+  this.load.image("ui_logo", "assets/ui_logo.png");
 }
 
 function create() {
@@ -121,15 +126,20 @@ function create() {
   car = this.physics.add.sprite(lanes[Math.floor(LANE_COUNT / 2)], H - 90, "car");
   scaleSpriteToWidth(car, 46);
 
-  // ✅ touch = bang: make hitbox almost the full sprite
+  // touch = bang hitbox
   car.body.setSize(car.width * HITBOX_W, car.height * HITBOX_H, true);
 
   enemies = this.physics.add.group();
 
+  // ✅ Score (bolder + outline + shadow)
   scoreText = this.add.text(10, 10, "Score: 0", {
-    fontSize: "18px",
-    fill: "#fff"
+    fontFamily: "Arial, sans-serif",
+    fontSize: "22px",
+    fontStyle: "bold",
+    color: "#ffffff"
   });
+  scoreText.setStroke("#000000", 5);
+  scoreText.setShadow(2, 2, "#000000", 8, true, true);
 
   // collision
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
@@ -137,7 +147,7 @@ function create() {
   setupTiltControls();
   showStartOverlay.call(this);
 
-  // ✅ keyboard fallback for browser testing (simulates tilt)
+  // keyboard fallback for browser testing (simulates tilt)
   this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
   this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
   this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
@@ -145,7 +155,6 @@ function create() {
 }
 
 function update(time, delta) {
-  // IMPORTANT: not too strict, prevents “touch speeds it up” feeling
   let dt = delta / 1000;
   dt = Math.min(dt, 0.12);
 
@@ -209,7 +218,6 @@ function maybeIncreaseDifficulty() {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  // spacing in pixels between spawns (far early, closer later)
   const minDist = Math.max(780 - difficulty * 60, 280);
   const maxDist = Math.max(1150 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
@@ -220,7 +228,6 @@ function spawnLogic(timeMs) {
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  // doubles ramp up (not too early)
   if (difficulty >= 2) {
     const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
     if (Math.random() < doubleChance) {
@@ -254,9 +261,7 @@ function spawnEnemyInLane(idx) {
   const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
   scaleSpriteToWidth(e, 46);
 
-  // ✅ touch = bang hitbox
   e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
-
   e.setVelocityY(enemySpeed);
   e.x += Phaser.Math.Between(-2, 2);
 }
@@ -283,7 +288,6 @@ function startGame() {
 
   nextSpawnAt = performance.now() + 800;
 
-  // ensure physics is running after restart
   this.physics.resume();
 }
 
@@ -302,10 +306,27 @@ function onGameOver() {
 
 function showStartOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
-  overlayUI.title = this.add.text(W/2, H/2 - 80, "ROAD RACER", { fontSize: "32px", fill: "#fff" }).setOrigin(0.5);
-  overlayUI.tip = this.add.text(W/2, H/2 - 35, "Hold phone normally, then tap START", { fontSize: "14px", fill: "#ddd" }).setOrigin(0.5);
 
-  overlayUI.btn = makeButton(this, W/2, H/2 + 40, "START", () => {
+  // ✅ logo image instead of text
+  overlayUI.logo = this.add.image(W/2, H/2 - 120, "ui_logo").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.logo, 260);
+
+  // ✅ tip text: bolder + outline + shadow
+  overlayUI.tip = this.add.text(W/2, H/2 - 45, "Hold phone normally, then tap START", {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "16px",
+    fontStyle: "bold",
+    color: "#ffffff",
+    align: "center"
+  }).setOrigin(0.5);
+  overlayUI.tip.setStroke("#000000", 5);
+  overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
+
+  // ✅ start button image
+  overlayUI.btn = this.add.image(W/2, H/2 + 40, "ui_start").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.btn, 220);
+  overlayUI.btn.setInteractive({ useHandCursor: true });
+  overlayUI.btn.on("pointerdown", () => {
     hideOverlay();
     startGame.call(this);
   });
@@ -313,9 +334,26 @@ function showStartOverlay() {
 
 function showGameOverOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
-  overlayUI.title = this.add.text(W/2, H/2 - 80, "GAME OVER", { fontSize: "32px", fill: "#ff4444" }).setOrigin(0.5);
-  overlayUI.tip = this.add.text(W/2, H/2 - 30, `Score: ${score}`, { fontSize: "16px", fill: "#fff" }).setOrigin(0.5);
 
+  overlayUI.title = this.add.text(W/2, H/2 - 80, "GAME OVER", {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "34px",
+    fontStyle: "bold",
+    color: "#ff4444"
+  }).setOrigin(0.5);
+  overlayUI.title.setStroke("#000000", 6);
+  overlayUI.title.setShadow(2, 2, "#000000", 8, true, true);
+
+  overlayUI.tip = this.add.text(W/2, H/2 - 30, `Score: ${score}`, {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "18px",
+    fontStyle: "bold",
+    color: "#ffffff"
+  }).setOrigin(0.5);
+  overlayUI.tip.setStroke("#000000", 5);
+  overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
+
+  // keep your green restart button for now
   overlayUI.btn = makeButton(this, W/2, H/2 + 40, "RESTART", () => {
     hideOverlay();
     startGame.call(this);
@@ -329,7 +367,16 @@ function hideOverlay() {
 
 function makeButton(scene, x, y, label, cb) {
   const bg = scene.add.rectangle(x, y, 170, 54, 0x22c55e).setStrokeStyle(2, 0xffffff, 1);
-  const t = scene.add.text(x, y, label, { fontSize: "20px", fill: "#fff" }).setOrigin(0.5);
+  const t = scene.add.text(x, y, label, {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "20px",
+    fontStyle: "bold",
+    color: "#fff"
+  }).setOrigin(0.5);
+
+  t.setStroke("#000000", 4);
+  t.setShadow(2, 2, "#000000", 8, true, true);
+
   bg.setInteractive({ useHandCursor: true }).on("pointerdown", cb);
   return { destroy: () => { bg.destroy(); t.destroy(); } };
 }
@@ -348,6 +395,11 @@ function setupTiltControls() {
 function scaleSpriteToWidth(s, w) {
   s.setScale(w / (s.width || 1));
 }
+
+function scaleImageToWidth(img, w) {
+  img.setScale(w / (img.width || 1));
+}
+
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
