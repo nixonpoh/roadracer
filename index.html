@@ -46,10 +46,17 @@ let lastSpawnLaneIndex = -1;
 // enemy skins
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// Tilt
-let tiltCooldownMs = 130;
-let lastTiltTime = 0;
-let tiltThreshold = 12;
+// ✅ Smooth tilt steering variables
+let tiltGamma = 0;                 // live tilt input (- left, + right)
+let neutralDeadzone = 4;           // degrees where we treat as "center"
+let steerMaxSpeed = 340;           // max px/sec lateral movement
+let steerSensitivity = 1.0;        // multiply tilt strength
+let steerSmooth = 0.12;            // 0..1 smoothing (higher = snappier)
+let steerGammaSmoothed = 0;        // filtered gamma
+
+// Lane boundaries (keep car on road)
+let minX = 70;
+let maxX = 280;
 
 let overlayUI = {};
 
@@ -58,19 +65,20 @@ function preload() {
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
 
-  // enemies (different colors)
+  // enemies
   this.load.image("enemy_black", "assets/blackcar.png");
   this.load.image("enemy_blue", "assets/bluecar.png");
   this.load.image("enemy_orange", "assets/orangecar.png");
   this.load.image("enemy_green", "assets/greencar.png");
-  this.load.image("enemy_green", "assets/purplecar.png");
 }
 
 function create() {
-  // lane centers (your tuned values)
+  // lanes (your tuned values)
   lanes = [70, 180, 280];
+  minX = lanes[0];
+  maxX = lanes[2];
 
-  // Road fill (two images for seamless loop)
+  // road fill (two images loop)
   road1 = this.add.image(W/2, H/2, "road");
   roadScale = Math.max(W / road1.width, H / road1.height);
   road1.setScale(roadScale);
@@ -78,47 +86,42 @@ function create() {
   road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
   road2.setScale(roadScale);
 
-  // Player
+  // player
   car = this.physics.add.sprite(lanes[1], H - 90, "car");
-  car.setCollideWorldBounds(true);
-
-  // car size (your smaller size)
+  car.setCollideWorldBounds(false); // we clamp manually to road bounds
   scaleSpriteToWidth(car, 47);
 
-  // Enemies group
   enemies = this.physics.add.group();
 
-  // Score UI
   scoreText = this.add.text(10, 10, "Score: 0", {
     fontSize: "18px",
     fill: "#ffffff"
   });
 
-  // Collision
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
-  // Tilt
   setupTiltControls();
-
-  // Start overlay
   showStartOverlay.call(this);
+
+  // keyboard backup (smooth)
+  this.input.keyboard.on("keydown-LEFT", () => { tiltGamma = -18; });
+  this.input.keyboard.on("keydown-RIGHT", () => { tiltGamma = 18; });
+  this.input.keyboard.on("keyup-LEFT", () => { tiltGamma = 0; });
+  this.input.keyboard.on("keyup-RIGHT", () => { tiltGamma = 0; });
 }
 
-function update(time) {
+function update(time, delta) {
+  const dt = delta / 1000;
+
   if (playing && !gameOver) {
     scrollRoad();
     maybeIncreaseDifficulty();
     spawnLogic(time);
+    smoothSteer(dt);
   }
 
   if (!playing || gameOver) return;
 
-  // keyboard backup
-  const cursors = this.input.keyboard.createCursorKeys();
-  if (Phaser.Input.Keyboard.JustDown(cursors.left)) moveLeft();
-  if (Phaser.Input.Keyboard.JustDown(cursors.right)) moveRight();
-
-  // scoring when enemies pass bottom
   enemies.children.iterate((e) => {
     if (e && e.y > H + 140) {
       e.destroy();
@@ -126,6 +129,35 @@ function update(time) {
       scoreText.setText("Score: " + score);
     }
   });
+}
+
+// -------------------- SMOOTH STEERING --------------------
+
+function smoothSteer(dt) {
+  // Smooth the tilt value (filters jitter)
+  steerGammaSmoothed = lerp(steerGammaSmoothed, tiltGamma, steerSmooth);
+
+  // Deadzone near center so it doesn't drift
+  let g = steerGammaSmoothed;
+  if (Math.abs(g) < neutralDeadzone) g = 0;
+
+  // Convert degrees into -1..1 steering
+  // clamp at +/-25 degrees
+  const norm = Phaser.Math.Clamp(g / 25, -1, 1) * steerSensitivity;
+
+  // target velocity in px/sec
+  const vx = norm * steerMaxSpeed;
+
+  // Apply smooth motion
+  car.x += vx * dt;
+
+  // Auto-centering: if phone is level, gently pull toward center lane
+  if (g === 0) {
+    car.x = lerp(car.x, lanes[1], 0.06);
+  }
+
+  // Clamp to road boundaries
+  car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
 // -------------------- ROAD LOOP --------------------
@@ -140,17 +172,18 @@ function scrollRoad() {
   if (road2.y - H/2 >= roadHeight) road2.y = road1.y - roadHeight;
 }
 
-// -------------------- DIFFICULTY (more aggressive) --------------------
+// -------------------- DIFFICULTY (aggressive) --------------------
 
 function maybeIncreaseDifficulty() {
-  // ✅ bump difficulty every 6 points (more aggressive than 8)
   if (score - lastDifficultyBumpScore >= 6) {
     lastDifficultyBumpScore = score;
     difficulty++;
 
-    // faster ramp
     roadScrollSpeed += 0.35;
     enemySpeed += 18;
+
+    // also slightly increase steering max speed so it still feels responsive later
+    steerMaxSpeed = Math.min(520, steerMaxSpeed + 12);
   }
 }
 
@@ -159,7 +192,6 @@ function maybeIncreaseDifficulty() {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  // ✅ Starts faster & ramps faster (more aggressive)
   const baseDelay = Math.max(900 - difficulty * 95, 260);
   const jitter = Phaser.Math.Between(-180, 220);
 
@@ -169,19 +201,15 @@ function spawnLogic(timeMs) {
   const delay = Math.max(220, baseDelay + jitter + gapExtra);
   nextSpawnAt = timeMs + delay;
 
-  // Spawn #1
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  // ✅ Double spawns earlier (difficulty >= 1)
   const allowDouble = difficulty >= 1;
   if (allowDouble) {
     const doubleChance = Math.min(0.12 + difficulty * 0.05, 0.50);
-
     if (Math.random() < doubleChance) {
       const laneB = pickDifferentLaneIndex(laneA);
       const extraDelay = Phaser.Math.Between(120, 260);
-
       setTimeout(() => {
         if (playing && !gameOver) spawnEnemyInLane(laneB);
       }, extraDelay);
@@ -213,16 +241,14 @@ function pickDifferentLaneIndex(notThisIndex) {
 function spawnEnemyInLane(laneIndex) {
   if (!playing || gameOver) return;
 
-  // ✅ RANDOM COLOR ENEMY
   const enemyKey = Phaser.Utils.Array.GetRandom(ENEMY_KEYS);
-
   const laneX = lanes[laneIndex];
+
   const e = enemies.create(laneX, -120, enemyKey);
-
-  // size same as player
   scaleSpriteToWidth(e, 47);
-
   e.setVelocityY(enemySpeed);
+
+  // tiny variation
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -258,18 +284,6 @@ function onGameOver() {
   showGameOverOverlay.call(this);
 }
 
-// -------------------- MOVEMENT --------------------
-
-function moveLeft() {
-  const idx = lanes.indexOf(car.x);
-  if (idx > 0) car.x = lanes[idx - 1];
-}
-
-function moveRight() {
-  const idx = lanes.indexOf(car.x);
-  if (idx < lanes.length - 1) car.x = lanes[idx + 1];
-}
-
 // -------------------- UI --------------------
 
 function showStartOverlay() {
@@ -280,7 +294,7 @@ function showStartOverlay() {
     fill: "#ffffff"
   }).setOrigin(0.5);
 
-  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Tap START • Tilt to change lanes", {
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Tap START • Tilt to steer smoothly", {
     fontSize: "14px",
     fill: "#dddddd"
   }).setOrigin(0.5);
@@ -351,14 +365,7 @@ function setupTiltControls() {
 
   window.addEventListener("deviceorientation", (event) => {
     if (!playing || gameOver) return;
-
-    const now = Date.now();
-    if (now - lastTiltTime < tiltCooldownMs) return;
-
-    const gamma = event.gamma ?? 0;
-
-    if (gamma <= -tiltThreshold) { moveLeft(); lastTiltTime = now; }
-    else if (gamma >= tiltThreshold) { moveRight(); lastTiltTime = now; }
+    tiltGamma = event.gamma ?? 0; // store tilt, we smooth it in update()
   });
 }
 
@@ -367,6 +374,10 @@ function setupTiltControls() {
 function scaleSpriteToWidth(sprite, targetWidthPx) {
   const texW = sprite.width || 1;
   sprite.setScale(targetWidthPx / texW);
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 </script>
 
