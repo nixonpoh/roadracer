@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Road Racer</title>
 
-  <!-- Local Phaser -->
   <script src="assets/phaser.min.js"></script>
 
   <style>
@@ -17,7 +16,6 @@
       height: 100%;
       width: 100%;
       touch-action: none;
-      -webkit-user-select: none;
       user-select: none;
     }
     canvas {
@@ -32,6 +30,13 @@
 <script>
 const W = 360;
 const H = 640;
+
+const ROAD_LEFT = 50;
+const ROAD_RIGHT = 310;
+const LANE_COUNT = 5;
+
+const BASE_ROAD_SPEED = 360;
+const ENEMY_ROAD_GAP = 70;
 
 const config = {
   type: Phaser.AUTO,
@@ -51,38 +56,28 @@ let gameOver = false;
 let road1, road2;
 let roadScale = 1;
 
-// ✅ TIME-BASED SPEEDS (px/sec)
 let roadScrollSpeed = 0;
 let enemySpeed = 0;
 
-// ✅ Base pacing (tweak these)
-const BASE_ROAD_SPEED = 360;          // was 180 (too slow)
-const ENEMY_ROAD_GAP = 70;            // enemy is only slightly faster than road
-
-// spawn + difficulty
 let nextSpawnAt = 0;
 let difficulty = 0;
 let lastDifficultyBumpScore = 0;
 let lastSpawnLaneIndex = -1;
 
-// enemy skins
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// tilt steering
+// steering
 let rawGamma = 0;
 let gammaZero = 0;
 let gammaFiltered = 0;
 
 let neutralDeadzone = 4;
 let steerSensitivity = 0.9;
-let steerMaxSpeed = 260;   // px/sec
+let steerMaxSpeed = 300;
 let steerSmooth = 0.08;
 let maxGammaAbs = 25;
 
-// road bounds
-let minX = 70;
-let maxX = 280;
-
+let minX, maxX;
 let overlayUI = {};
 
 function preload() {
@@ -96,11 +91,19 @@ function preload() {
 }
 
 function create() {
-  lanes = [70, 180, 280];
-  minX = lanes[0];
-  maxX = lanes[2];
+  // 🔥 build 5 evenly spaced lanes
+  lanes = [];
+  const roadWidth = ROAD_RIGHT - ROAD_LEFT;
+  const laneSpacing = roadWidth / (LANE_COUNT - 1);
 
-  // road fill loop
+  for (let i = 0; i < LANE_COUNT; i++) {
+    lanes.push(ROAD_LEFT + i * laneSpacing);
+  }
+
+  minX = ROAD_LEFT;
+  maxX = ROAD_RIGHT;
+
+  // road visuals
   road1 = this.add.image(W/2, H/2, "road");
   roadScale = Math.max(W / road1.width, H / road1.height);
   road1.setScale(roadScale);
@@ -108,39 +111,24 @@ function create() {
   road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
   road2.setScale(roadScale);
 
-  car = this.physics.add.sprite(lanes[1], H - 90, "car");
-  car.setCollideWorldBounds(false);
-  scaleSpriteToWidth(car, 47);
+  car = this.physics.add.sprite(lanes[2], H - 90, "car");
+  scaleSpriteToWidth(car, 46);
 
   enemies = this.physics.add.group();
 
   scoreText = this.add.text(10, 10, "Score: 0", {
     fontSize: "18px",
-    fill: "#ffffff"
+    fill: "#fff"
   });
 
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
-  // reduce webview “touch = performance change” side-effects
-  this.input.mouse?.disableContextMenu?.();
-  this.input.addPointer(1);
-
   setupTiltControls();
   showStartOverlay.call(this);
-
-  // keyboard fallback (desktop)
-  this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
-  this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
-  this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
-  this.input.keyboard.on("keyup-RIGHT", () => { rawGamma = 0; });
 }
 
 function update(time, delta) {
-  // ✅ IMPORTANT FIX:
-  // Too-small clamp makes the game run slower whenever fps drops,
-  // and then “speed up” when you touch (fps rises).
-  let dt = delta / 1000;
-  dt = Math.min(dt, 0.12); // was 0.05 (too strict)
+  let dt = Math.min(delta / 1000, 0.12);
 
   if (playing && !gameOver) {
     scrollRoad(dt);
@@ -149,10 +137,8 @@ function update(time, delta) {
     smoothSteer(dt);
   }
 
-  if (!playing || gameOver) return;
-
-  enemies.children.iterate((e) => {
-    if (e && e.y > H + 140) {
+  enemies.children.iterate(e => {
+    if (e && e.y > H + 120) {
       e.destroy();
       score++;
       scoreText.setText("Score: " + score);
@@ -160,140 +146,95 @@ function update(time, delta) {
   });
 }
 
-// -------------------- STEERING --------------------
+// ---------------- STEERING ----------------
 
 function smoothSteer(dt) {
-  let g = rawGamma - gammaZero;
-  g = Phaser.Math.Clamp(g, -maxGammaAbs, maxGammaAbs);
-
+  let g = Phaser.Math.Clamp(rawGamma - gammaZero, -maxGammaAbs, maxGammaAbs);
   gammaFiltered = lerp(gammaFiltered, g, steerSmooth);
 
-  let gf = gammaFiltered;
-  if (Math.abs(gf) < neutralDeadzone) gf = 0;
-
-  const norm = Phaser.Math.Clamp(gf / maxGammaAbs, -1, 1) * steerSensitivity;
-  const vx = norm * steerMaxSpeed;
+  let gf = Math.abs(gammaFiltered) < neutralDeadzone ? 0 : gammaFiltered;
+  const vx = (gf / maxGammaAbs) * steerSensitivity * steerMaxSpeed;
 
   car.x += vx * dt;
   car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
-// -------------------- ROAD LOOP --------------------
+// ---------------- ROAD ----------------
 
 function scrollRoad(dt) {
-  const speed = roadScrollSpeed * dt;
+  const s = roadScrollSpeed * dt;
+  road1.y += s;
+  road2.y += s;
 
-  road1.y += speed;
-  road2.y += speed;
-
-  const roadHeight = road1.height * roadScale;
-
-  if (road1.y - H/2 >= roadHeight) road1.y = road2.y - roadHeight;
-  if (road2.y - H/2 >= roadHeight) road2.y = road1.y - roadHeight;
+  const h = road1.height * roadScale;
+  if (road1.y - H/2 >= h) road1.y = road2.y - h;
+  if (road2.y - H/2 >= h) road2.y = road1.y - h;
 }
 
-// -------------------- DIFFICULTY --------------------
+// ---------------- DIFFICULTY ----------------
 
 function maybeIncreaseDifficulty() {
   if (score - lastDifficultyBumpScore >= 6) {
     lastDifficultyBumpScore = score;
     difficulty++;
-
-    // ✅ Road gets faster steadily
     roadScrollSpeed += 35;
-
-    // ✅ Enemy stays only slightly faster than road
     enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
-
-    // steering nudges up a bit
-    steerMaxSpeed = Math.min(360, steerMaxSpeed + 8);
   }
 }
 
-// -------------------- SPAWNING (DISTANCE-BASED) --------------------
+// ---------------- SPAWNING ----------------
 
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  // Spacing: far at start, tighter with difficulty
-  // (distance in pixels between spawns)
-  const minDist = Math.max(820 - difficulty * 60, 280);
-  const maxDist = Math.max(1180 - difficulty * 90, 360);
+  const minDist = Math.max(780 - difficulty * 60, 280);
+  const maxDist = Math.max(1150 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
 
-  // convert distance to ms using current enemy speed
   const delay = (dist / enemySpeed) * 1000;
   nextSpawnAt = timeMs + Math.max(240, delay);
 
-  // spawn one
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  // doubles ramp up with difficulty (but not too early)
-  if (difficulty >= 2) {
-    const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.50);
-    if (Math.random() < doubleChance) {
-      const laneB = pickDifferentLaneIndex(laneA);
-
-      // late-game doubles can be closer
-      const extraDelayMin = Math.max(110, 220 - difficulty * 12);
-      const extraDelayMax = Math.max(160, 320 - difficulty * 14);
-      const extraDelay = Phaser.Math.Between(extraDelayMin, extraDelayMax);
-
-      setTimeout(() => {
-        if (playing && !gameOver) spawnEnemyInLane(laneB);
-      }, extraDelay);
-    }
+  if (difficulty >= 2 && Math.random() < Math.min(0.1 + difficulty * 0.05, 0.45)) {
+    const laneB = pickDifferentLaneIndex(laneA);
+    setTimeout(() => spawnEnemyInLane(laneB), Phaser.Math.Between(120, 260));
   }
 }
 
 function pickLaneIndexAvoidRepeat() {
-  let choices = [0, 1, 2];
-  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.75) {
+  let choices = [...Array(LANE_COUNT).keys()];
+  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.7) {
     choices = choices.filter(i => i !== lastSpawnLaneIndex);
   }
-  const picked = Phaser.Utils.Array.GetRandom(choices);
-  lastSpawnLaneIndex = picked;
-  return picked;
+  const pick = Phaser.Utils.Array.GetRandom(choices);
+  lastSpawnLaneIndex = pick;
+  return pick;
 }
 
-function pickDifferentLaneIndex(notThisIndex) {
-  let options = [0, 1, 2].filter(i => i !== notThisIndex);
-  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.6) {
-    const options2 = options.filter(i => i !== lastSpawnLaneIndex);
-    if (options2.length > 0) options = options2;
-  }
-  const picked = Phaser.Utils.Array.GetRandom(options);
-  lastSpawnLaneIndex = picked;
-  return picked;
+function pickDifferentLaneIndex(notThis) {
+  const opts = [...Array(LANE_COUNT).keys()].filter(i => i !== notThis);
+  return Phaser.Utils.Array.GetRandom(opts);
 }
 
-function spawnEnemyInLane(laneIndex) {
+function spawnEnemyInLane(idx) {
   if (!playing || gameOver) return;
 
-  const enemyKey = Phaser.Utils.Array.GetRandom(ENEMY_KEYS);
-  const laneX = lanes[laneIndex];
-
-  const e = enemies.create(laneX, -120, enemyKey);
-  scaleSpriteToWidth(e, 47);
-
+  const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
+  scaleSpriteToWidth(e, 46);
   e.setVelocityY(enemySpeed);
-  e.x += Phaser.Math.Between(-2, 2);
 }
 
-// -------------------- GAME FLOW --------------------
+// ---------------- GAME FLOW ----------------
 
 function startGame() {
   score = 0;
-  scoreText.setText("Score: 0");
-  gameOver = false;
-  playing = true;
-
   difficulty = 0;
   lastDifficultyBumpScore = 0;
-  lastSpawnLaneIndex = -1;
+  playing = true;
+  gameOver = false;
 
-  // ✅ Base: road fast, enemy slightly faster
   roadScrollSpeed = BASE_ROAD_SPEED;
   enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
 
@@ -302,36 +243,22 @@ function startGame() {
 
   gammaZero = rawGamma;
   gammaFiltered = 0;
-
-  nextSpawnAt = performance.now() + 900;
+  nextSpawnAt = performance.now() + 800;
 }
 
 function onGameOver() {
-  if (gameOver) return;
-
   gameOver = true;
   playing = false;
   roadScrollSpeed = 0;
-
   this.physics.pause();
   showGameOverOverlay.call(this);
 }
 
-// -------------------- UI --------------------
+// ---------------- UI ----------------
 
 function showStartOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
-
-  overlayUI.title = this.add.text(W/2, H/2 - 90, "ROAD RACER", {
-    fontSize: "32px",
-    fill: "#ffffff"
-  }).setOrigin(0.5);
-
-  overlayUI.tip = this.add.text(W/2, H/2 - 40, "Hold phone normally, then tap START", {
-    fontSize: "14px",
-    fill: "#dddddd"
-  }).setOrigin(0.5);
-
+  overlayUI.title = this.add.text(W/2, H/2 - 80, "ROAD RACER", { fontSize: "32px", fill: "#fff" }).setOrigin(0.5);
   overlayUI.btn = makeButton(this, W/2, H/2 + 40, "START", () => {
     this.physics.resume();
     startGame.call(this);
@@ -340,17 +267,8 @@ function showStartOverlay() {
 
 function showGameOverOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
-
-  overlayUI.title = this.add.text(W/2, H/2 - 90, "GAME OVER", {
-    fontSize: "32px",
-    fill: "#ff4444"
-  }).setOrigin(0.5);
-
-  overlayUI.tip = this.add.text(W/2, H/2 - 40, `Final Score: ${score}`, {
-    fontSize: "16px",
-    fill: "#ffffff"
-  }).setOrigin(0.5);
-
+  overlayUI.title = this.add.text(W/2, H/2 - 80, "GAME OVER", { fontSize: "32px", fill: "#ff4444" }).setOrigin(0.5);
+  overlayUI.tip = this.add.text(W/2, H/2 - 30, `Score: ${score}`, { fontSize: "16px", fill: "#fff" }).setOrigin(0.5);
   overlayUI.btn = makeButton(this, W/2, H/2 + 40, "RESTART", () => {
     this.physics.resume();
     startGame.call(this);
@@ -362,56 +280,27 @@ function hideOverlay() {
   overlayUI = {};
 }
 
-function makeButton(scene, x, y, label, onClick) {
-  const btnBg = scene.add.rectangle(x, y, 170, 54, 0x22c55e, 1)
-    .setStrokeStyle(2, 0xffffff, 1);
-
-  const btnText = scene.add.text(x, y, label, {
-    fontSize: "20px",
-    fill: "#ffffff"
-  }).setOrigin(0.5);
-
-  btnBg.setInteractive({ useHandCursor: true });
-  btnBg.on("pointerdown", (p) => {
-    if (p && p.event && p.event.preventDefault) p.event.preventDefault();
-    onClick();
-  });
-
-  return { destroy: () => { btnBg.destroy(); btnText.destroy(); } };
+function makeButton(scene, x, y, label, cb) {
+  const bg = scene.add.rectangle(x, y, 170, 54, 0x22c55e);
+  const t = scene.add.text(x, y, label, { fontSize: "20px", fill: "#fff" }).setOrigin(0.5);
+  bg.setInteractive().on("pointerdown", cb);
+  return { destroy: () => { bg.destroy(); t.destroy(); } };
 }
 
-// -------------------- TILT --------------------
+// ---------------- TILT ----------------
 
 function setupTiltControls() {
-  const requestIOSPermissionIfNeeded = async () => {
-    try {
-      if (
-        typeof DeviceOrientationEvent !== "undefined" &&
-        typeof DeviceOrientationEvent.requestPermission === "function"
-      ) {
-        const result = await DeviceOrientationEvent.requestPermission();
-        console.log("iOS tilt permission:", result);
-      }
-    } catch (e) {
-      console.log("Tilt permission error:", e);
-    }
-  };
-
-  window.addEventListener("click", () => requestIOSPermissionIfNeeded(), { once: true });
-
-  window.addEventListener("deviceorientation", (event) => {
+  window.addEventListener("deviceorientation", e => {
     if (!playing || gameOver) return;
-    rawGamma = event.gamma ?? 0;
+    rawGamma = e.gamma ?? 0;
   }, { passive: true });
 }
 
-// -------------------- HELPERS --------------------
+// ---------------- HELPERS ----------------
 
-function scaleSpriteToWidth(sprite, targetWidthPx) {
-  const texW = sprite.width || 1;
-  sprite.setScale(targetWidthPx / texW);
+function scaleSpriteToWidth(s, w) {
+  s.setScale(w / s.width);
 }
-
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
