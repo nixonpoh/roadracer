@@ -38,12 +38,15 @@ const ROAD_RIGHT = 310;
 const LANE_COUNT = 5;
 
 // pacing
-const BASE_ROAD_SPEED = 360;   // px/sec
+const BASE_ROAD_SPEED = 500;   // px/sec
 const ENEMY_ROAD_GAP = 70;     // enemy slightly faster than road
 
 // collision tuning (touch = bang)
 const HITBOX_W = 0.7;         // wider hitbox = easier crash
 const HITBOX_H = 0.8;
+
+// ✅ anti-unfair-spawns tuning
+const MIN_SPAWN_GAP_Y = 210;  // bigger = fewer “walls” (try 190–240)
 
 const config = {
   type: Phaser.AUTO,
@@ -144,7 +147,6 @@ function create() {
     fontStyle: "bold",
     color: "#ffffff"
   });
-  // bolder/visible
   scoreText.setStroke("#000000", 5);
   scoreText.setShadow(2, 2, "#000000", 8, true, true);
 
@@ -174,15 +176,20 @@ function update(time, delta) {
     maybeIncreaseDifficulty();
     spawnLogic(time);
     smoothSteer(dt);
+
+    // ✅ SMOOTH enemy movement (dt-based)
+    enemies.children.iterate(e => {
+      if (!e) return;
+      e.y += (e.speed || enemySpeed) * dt;
+    });
   }
 
+  // scoring when enemies pass bottom
   enemies.children.iterate(e => {
     if (e && e.y > H + 120) {
       e.destroy();
       score++;
       scoreText.setText("Score: " + score);
-
-      // 🔊 play sound on +1
       if (scoreSound) scoreSound.play();
     }
   });
@@ -227,7 +234,51 @@ function maybeIncreaseDifficulty() {
   }
 }
 
-// ---------------- SPAWNING ----------------
+// ---------------- SPAWNING (ANTI-UNFAIR WALLS) ----------------
+
+// lane considered blocked if there is already an enemy near the top in that lane
+function isLaneCurrentlyBlocked(laneIndex) {
+  const x = lanes[laneIndex];
+  let blocked = false;
+
+  enemies.children.iterate(e => {
+    if (!e) return;
+
+    // same lane (allow tiny randomness wiggle)
+    if (Math.abs(e.x - x) < 8) {
+      // if enemy is still near top, don't spawn another here
+      if (e.y < MIN_SPAWN_GAP_Y) blocked = true;
+    }
+  });
+
+  return blocked;
+}
+
+// pick a safe lane; if none safe, fall back to any lane except avoidLane
+function pickSafeLaneIndex(avoidLane = -1) {
+  let candidates = [];
+  for (let i = 0; i < LANE_COUNT; i++) {
+    if (i === avoidLane) continue;
+    if (!isLaneCurrentlyBlocked(i)) candidates.push(i);
+  }
+
+  // if everything blocked, allow any lane so game continues
+  if (candidates.length === 0) {
+    for (let i = 0; i < LANE_COUNT; i++) {
+      if (i !== avoidLane) candidates.push(i);
+    }
+  }
+
+  // avoid repeating last lane most of the time
+  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.7 && candidates.length > 1) {
+    const filtered = candidates.filter(i => i !== lastSpawnLaneIndex);
+    if (filtered.length > 0) candidates = filtered;
+  }
+
+  const pick = Phaser.Utils.Array.GetRandom(candidates);
+  lastSpawnLaneIndex = pick;
+  return pick;
+}
 
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
@@ -240,35 +291,27 @@ function spawnLogic(timeMs) {
   const delay = (dist / enemySpeed) * 1000;
   nextSpawnAt = timeMs + Math.max(240, delay);
 
-  const laneA = pickLaneIndexAvoidRepeat();
+  // Spawn 1 enemy in a safe lane
+  const laneA = pickSafeLaneIndex();
   spawnEnemyInLane(laneA);
 
-  // doubles ramp up (not too early)
+  // doubles ramp up (but must still be fair)
   if (difficulty >= 2) {
     const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
     if (Math.random() < doubleChance) {
-      const laneB = pickDifferentLaneIndex(laneA);
       const extraDelay = Phaser.Math.Between(120, 260);
+
       setTimeout(() => {
-        if (playing && !gameOver) spawnEnemyInLane(laneB);
+        if (!playing || gameOver) return;
+
+        // pick a different safe lane for the second car
+        const laneB = pickSafeLaneIndex(laneA);
+
+        // if laneB somehow invalid, skip second spawn
+        if (laneB !== -1) spawnEnemyInLane(laneB);
       }, extraDelay);
     }
   }
-}
-
-function pickLaneIndexAvoidRepeat() {
-  let choices = [...Array(LANE_COUNT).keys()];
-  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.7) {
-    choices = choices.filter(i => i !== lastSpawnLaneIndex);
-  }
-  const pick = Phaser.Utils.Array.GetRandom(choices);
-  lastSpawnLaneIndex = pick;
-  return pick;
-}
-
-function pickDifferentLaneIndex(notThis) {
-  const opts = [...Array(LANE_COUNT).keys()].filter(i => i !== notThis);
-  return Phaser.Utils.Array.GetRandom(opts);
 }
 
 function spawnEnemyInLane(idx) {
@@ -280,7 +323,10 @@ function spawnEnemyInLane(idx) {
   // ✅ touch = bang hitbox
   e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
 
-  e.setVelocityY(enemySpeed);
+  // ✅ store speed, move with dt in update()
+  e.speed = enemySpeed;
+
+  // tiny wiggle
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -338,7 +384,6 @@ function showStartOverlay() {
   overlayUI.tip.setStroke("#000000", 5);
   overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
 
-  // ✅ FIX: start button must be centered + scaled
   overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 220);
   overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
@@ -350,10 +395,8 @@ function showStartOverlay() {
 function showGameOverOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
 
-  // ✅ FIX: gameover image centered + scaled
-overlayUI.title = this.add.image(W/2, H/2 - 120, "ui_gameover").setOrigin(0.5);
-scaleImageToWidth(overlayUI.title, 200); // same width as ROAD RACER logo
-
+  overlayUI.title = this.add.image(W/2, H/2 - 120, "ui_gameover").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.title, 200);
 
   overlayUI.tip = this.add.text(W/2, H/2 - 40, `Score: ${score}`, {
     fontFamily: "Arial, sans-serif",
@@ -364,7 +407,6 @@ scaleImageToWidth(overlayUI.title, 200); // same width as ROAD RACER logo
   overlayUI.tip.setStroke("#000000", 5);
   overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
 
-  // ✅ FIX: restart button centered + scaled
   overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 240);
   overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
