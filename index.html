@@ -205,14 +205,37 @@ function maybeIncreaseDifficulty() {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  const baseDelay = Math.max(900 - difficulty * 95, 260);
-  const jitter = Phaser.Math.Between(-180, 220);
+// --- SPACING: far at start, tighter with difficulty (distance-based) ---
+const minDist = Math.max(680 - difficulty * 55, 240); // px
+const maxDist = Math.max(980 - difficulty * 80, 320); // px
+const dist = Phaser.Math.Between(minDist, maxDist);
 
-  const gapChance = Math.min(0.08 + difficulty * 0.015, 0.20);
-  const gapExtra = (Math.random() < gapChance) ? Phaser.Math.Between(80, 200) : 0;
+const delay = (dist / enemySpeed) * 1000;
+nextSpawnAt = timeMs + Math.max(210, delay);
 
-  const delay = Math.max(220, baseDelay + jitter + gapExtra);
-  nextSpawnAt = timeMs + delay;
+// spawn one
+const laneA = pickLaneIndexAvoidRepeat();
+spawnEnemyInLane(laneA);
+
+// --- DOUBLES: ramps up with difficulty ---
+const allowDouble = difficulty >= 1;
+if (allowDouble) {
+  const doubleChance = Math.min(0.12 + difficulty * 0.06, 0.55); // up to 55%
+  if (Math.random() < doubleChance) {
+    const laneB = pickDifferentLaneIndex(laneA);
+
+    // make late-game doubles feel "almost simultaneous"
+    const extraDelayMin = Math.max(80, 180 - difficulty * 10);
+    const extraDelayMax = Math.max(120, 260 - difficulty * 12);
+    const extraDelay = Phaser.Math.Between(extraDelayMin, extraDelayMax);
+
+    setTimeout(() => {
+      if (playing && !gameOver) spawnEnemyInLane(laneB);
+    }, extraDelay);
+  }
+}
+
+
 
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
