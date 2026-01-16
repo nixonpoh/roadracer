@@ -42,7 +42,7 @@ const BASE_ROAD_SPEED = 360;   // px/sec
 const ENEMY_ROAD_GAP = 70;     // enemy slightly faster than road
 
 // collision tuning (touch = bang)
-const HITBOX_W = 0.7;
+const HITBOX_W = 0.7;         // wider hitbox = easier crash
 const HITBOX_H = 0.8;
 
 const config = {
@@ -87,8 +87,10 @@ let maxGammaAbs = 25;
 let minX, maxX;
 let overlayUI = {};
 
+// 🔊 score sound
+let scoreSound;
+
 function preload() {
-  // game
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
 
@@ -97,13 +99,14 @@ function preload() {
   this.load.image("enemy_orange", "assets/orangecar.png");
   this.load.image("enemy_green", "assets/greencar.png");
 
-  // UI (start screen)
+  // UI images
   this.load.image("ui_start", "assets/ui_start.png");
   this.load.image("ui_logo", "assets/ui_logo.png");
-
-  // ✅ UI (game over screen)
   this.load.image("ui_gameover", "assets/gameover.png");
   this.load.image("ui_restart", "assets/restart.png");
+
+  // 🔊 score +1 sound
+  this.load.audio("scoreSound", "assets/score.mp3");
 }
 
 function create() {
@@ -130,27 +133,31 @@ function create() {
   car = this.physics.add.sprite(lanes[Math.floor(LANE_COUNT / 2)], H - 90, "car");
   scaleSpriteToWidth(car, 46);
 
+  // ✅ touch = bang: make hitbox almost the full sprite
   car.body.setSize(car.width * HITBOX_W, car.height * HITBOX_H, true);
 
   enemies = this.physics.add.group();
 
-  // Score (bold + outline + shadow)
   scoreText = this.add.text(10, 10, "Score: 0", {
     fontFamily: "Arial, sans-serif",
-    fontSize: "22px",
+    fontSize: "18px",
     fontStyle: "bold",
     color: "#ffffff"
   });
+  // bolder/visible
   scoreText.setStroke("#000000", 5);
   scoreText.setShadow(2, 2, "#000000", 8, true, true);
 
   // collision
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
+  // 🔊 create sound
+  scoreSound = this.sound.add("scoreSound", { volume: 0.6 });
+
   setupTiltControls();
   showStartOverlay.call(this);
 
-  // keyboard fallback for browser testing
+  // ✅ keyboard fallback for browser testing (simulates tilt)
   this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
   this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
   this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
@@ -158,6 +165,7 @@ function create() {
 }
 
 function update(time, delta) {
+  // IMPORTANT: not too strict, prevents “touch speeds it up” feeling
   let dt = delta / 1000;
   dt = Math.min(dt, 0.12);
 
@@ -173,6 +181,9 @@ function update(time, delta) {
       e.destroy();
       score++;
       scoreText.setText("Score: " + score);
+
+      // 🔊 play sound on +1
+      if (scoreSound) scoreSound.play();
     }
   });
 }
@@ -221,6 +232,7 @@ function maybeIncreaseDifficulty() {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
+  // spacing in pixels between spawns (far early, closer later)
   const minDist = Math.max(780 - difficulty * 60, 280);
   const maxDist = Math.max(1150 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
@@ -231,6 +243,7 @@ function spawnLogic(timeMs) {
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
+  // doubles ramp up (not too early)
   if (difficulty >= 2) {
     const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
     if (Math.random() < doubleChance) {
@@ -264,7 +277,9 @@ function spawnEnemyInLane(idx) {
   const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
   scaleSpriteToWidth(e, 46);
 
+  // ✅ touch = bang hitbox
   e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
+
   e.setVelocityY(enemySpeed);
   e.x += Phaser.Math.Between(-2, 2);
 }
@@ -290,6 +305,8 @@ function startGame() {
   gammaFiltered = 0;
 
   nextSpawnAt = performance.now() + 800;
+
+  // ensure physics is running after restart
   this.physics.resume();
 }
 
@@ -312,20 +329,19 @@ function showStartOverlay() {
   overlayUI.logo = this.add.image(W/2, H/2 - 120, "ui_logo").setOrigin(0.5);
   scaleImageToWidth(overlayUI.logo, 260);
 
-  overlayUI.tip = this.add.text(W/2, H/2 - 45, "Hold phone normally, then tap START", {
+  overlayUI.tip = this.add.text(W/2, H/2 - 35, "Hold phone normally, then tap START", {
     fontFamily: "Arial, sans-serif",
-    fontSize: "16px",
+    fontSize: "14px",
     fontStyle: "bold",
-    color: "#ffffff",
-    align: "center"
+    color: "#ffffff"
   }).setOrigin(0.5);
   overlayUI.tip.setStroke("#000000", 5);
   overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
 
-  overlayUI.btn = this.add.image(W/2, H/2 + 40, "ui_start").setOrigin(0.5);
+  // ✅ FIX: start button must be centered + scaled
+  overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 220);
-  overlayUI.btn.setInteractive({ useHandCursor: true });
-  overlayUI.btn.on("pointerdown", () => {
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
     hideOverlay();
     startGame.call(this);
   });
@@ -334,25 +350,24 @@ function showStartOverlay() {
 function showGameOverOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
 
-  // ✅ GAME OVER image
-  overlayUI.gameover = this.add.image(W/2, H/2 - 120, "ui_gameover").setOrigin(0.5);
-  scaleImageToWidth(overlayUI.gameover, 300);
+  // ✅ FIX: gameover image centered + scaled
+overlayUI.title = this.add.image(W/2, H/2 - 120, "ui_gameover").setOrigin(0.5);
+scaleImageToWidth(overlayUI.title, 200); // same width as ROAD RACER logo
 
-  // score text (bold/outlined)
-  overlayUI.score = this.add.text(W/2, H/2 - 45, `Score: ${score}`, {
+
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, `Score: ${score}`, {
     fontFamily: "Arial, sans-serif",
-    fontSize: "20px",
+    fontSize: "16px",
     fontStyle: "bold",
     color: "#ffffff"
   }).setOrigin(0.5);
-  overlayUI.score.setStroke("#000000", 5);
-  overlayUI.score.setShadow(2, 2, "#000000", 8, true, true);
+  overlayUI.tip.setStroke("#000000", 5);
+  overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
 
-  // ✅ RESTART button image
-  overlayUI.btn = this.add.image(W/2, H/2 + 40, "ui_restart").setOrigin(0.5);
+  // ✅ FIX: restart button centered + scaled
+  overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 240);
-  overlayUI.btn.setInteractive({ useHandCursor: true });
-  overlayUI.btn.on("pointerdown", () => {
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
     hideOverlay();
     startGame.call(this);
   });
@@ -377,9 +392,11 @@ function setupTiltControls() {
 function scaleSpriteToWidth(s, w) {
   s.setScale(w / (s.width || 1));
 }
+
 function scaleImageToWidth(img, w) {
   img.setScale(w / (img.width || 1));
 }
+
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
