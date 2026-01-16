@@ -16,6 +16,7 @@
       height: 100%;
       width: 100%;
       touch-action: none;
+      -webkit-user-select: none;
       user-select: none;
     }
     canvas {
@@ -31,12 +32,18 @@
 const W = 360;
 const H = 640;
 
+// 5 lanes across the road area
 const ROAD_LEFT = 50;
 const ROAD_RIGHT = 310;
 const LANE_COUNT = 5;
 
-const BASE_ROAD_SPEED = 360;
-const ENEMY_ROAD_GAP = 70;
+// pacing
+const BASE_ROAD_SPEED = 360;   // px/sec
+const ENEMY_ROAD_GAP = 70;     // enemy slightly faster than road
+
+// collision tuning (touch = bang)
+const HITBOX_W = 0.95;         // wider hitbox = easier crash
+const HITBOX_H = 0.96;
 
 const config = {
   type: Phaser.AUTO,
@@ -66,14 +73,14 @@ let lastSpawnLaneIndex = -1;
 
 const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
-// steering
+// tilt steering (+ keyboard sim)
 let rawGamma = 0;
 let gammaZero = 0;
 let gammaFiltered = 0;
 
 let neutralDeadzone = 4;
 let steerSensitivity = 0.9;
-let steerMaxSpeed = 300;
+let steerMaxSpeed = 300;   // px/sec
 let steerSmooth = 0.08;
 let maxGammaAbs = 25;
 
@@ -91,11 +98,10 @@ function preload() {
 }
 
 function create() {
-  // 🔥 build 5 evenly spaced lanes
+  // build 5 evenly spaced lanes
   lanes = [];
   const roadWidth = ROAD_RIGHT - ROAD_LEFT;
   const laneSpacing = roadWidth / (LANE_COUNT - 1);
-
   for (let i = 0; i < LANE_COUNT; i++) {
     lanes.push(ROAD_LEFT + i * laneSpacing);
   }
@@ -111,8 +117,12 @@ function create() {
   road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
   road2.setScale(roadScale);
 
-  car = this.physics.add.sprite(lanes[2], H - 90, "car");
+  // player
+  car = this.physics.add.sprite(lanes[Math.floor(LANE_COUNT / 2)], H - 90, "car");
   scaleSpriteToWidth(car, 46);
+
+  // ✅ touch = bang: make hitbox almost the full sprite
+  car.body.setSize(car.width * HITBOX_W, car.height * HITBOX_H, true);
 
   enemies = this.physics.add.group();
 
@@ -121,36 +131,23 @@ function create() {
     fill: "#fff"
   });
 
+  // collision
   this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
 
   setupTiltControls();
   showStartOverlay.call(this);
 
-
-
-  // ✅ KEYBOARD FALLBACK (desktop testing)
-this.input.keyboard.on("keydown-LEFT", () => {
-  rawGamma = -18;   // simulate tilt left
-});
-
-this.input.keyboard.on("keydown-RIGHT", () => {
-  rawGamma = 18;    // simulate tilt right
-});
-
-this.input.keyboard.on("keyup-LEFT", () => {
-  rawGamma = 0;
-});
-
-this.input.keyboard.on("keyup-RIGHT", () => {
-  rawGamma = 0;
-});
-
-
-
+  // ✅ keyboard fallback for browser testing (simulates tilt)
+  this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
+  this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
+  this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
+  this.input.keyboard.on("keyup-RIGHT", () => { rawGamma = 0; });
 }
 
 function update(time, delta) {
-  let dt = Math.min(delta / 1000, 0.12);
+  // IMPORTANT: not too strict, prevents “touch speeds it up” feeling
+  let dt = delta / 1000;
+  dt = Math.min(dt, 0.12);
 
   if (playing && !gameOver) {
     scrollRoad(dt);
@@ -196,11 +193,14 @@ function scrollRoad(dt) {
 // ---------------- DIFFICULTY ----------------
 
 function maybeIncreaseDifficulty() {
-  if (score - lastDifficultyBumpScore >= 6) {
+  if (score - lastDifficultyBumpScore >= 5) {
     lastDifficultyBumpScore = score;
     difficulty++;
-    roadScrollSpeed += 35;
+
+    roadScrollSpeed += 15;
     enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
+
+    steerMaxSpeed = Math.min(380, steerMaxSpeed + 8);
   }
 }
 
@@ -209,6 +209,7 @@ function maybeIncreaseDifficulty() {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
+  // spacing in pixels between spawns (far early, closer later)
   const minDist = Math.max(780 - difficulty * 60, 280);
   const maxDist = Math.max(1150 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
@@ -219,9 +220,16 @@ function spawnLogic(timeMs) {
   const laneA = pickLaneIndexAvoidRepeat();
   spawnEnemyInLane(laneA);
 
-  if (difficulty >= 2 && Math.random() < Math.min(0.1 + difficulty * 0.05, 0.45)) {
-    const laneB = pickDifferentLaneIndex(laneA);
-    setTimeout(() => spawnEnemyInLane(laneB), Phaser.Math.Between(120, 260));
+  // doubles ramp up (not too early)
+  if (difficulty >= 2) {
+    const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
+    if (Math.random() < doubleChance) {
+      const laneB = pickDifferentLaneIndex(laneA);
+      const extraDelay = Phaser.Math.Between(120, 260);
+      setTimeout(() => {
+        if (playing && !gameOver) spawnEnemyInLane(laneB);
+      }, extraDelay);
+    }
   }
 }
 
@@ -245,7 +253,12 @@ function spawnEnemyInLane(idx) {
 
   const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
   scaleSpriteToWidth(e, 46);
+
+  // ✅ touch = bang hitbox
+  e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
+
   e.setVelocityY(enemySpeed);
+  e.x += Phaser.Math.Between(-2, 2);
 }
 
 // ---------------- GAME FLOW ----------------
@@ -254,6 +267,8 @@ function startGame() {
   score = 0;
   difficulty = 0;
   lastDifficultyBumpScore = 0;
+  lastSpawnLaneIndex = -1;
+
   playing = true;
   gameOver = false;
 
@@ -265,13 +280,20 @@ function startGame() {
 
   gammaZero = rawGamma;
   gammaFiltered = 0;
+
   nextSpawnAt = performance.now() + 800;
+
+  // ensure physics is running after restart
+  this.physics.resume();
 }
 
 function onGameOver() {
+  if (gameOver) return;
+
   gameOver = true;
   playing = false;
   roadScrollSpeed = 0;
+
   this.physics.pause();
   showGameOverOverlay.call(this);
 }
@@ -281,8 +303,10 @@ function onGameOver() {
 function showStartOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
   overlayUI.title = this.add.text(W/2, H/2 - 80, "ROAD RACER", { fontSize: "32px", fill: "#fff" }).setOrigin(0.5);
+  overlayUI.tip = this.add.text(W/2, H/2 - 35, "Hold phone normally, then tap START", { fontSize: "14px", fill: "#ddd" }).setOrigin(0.5);
+
   overlayUI.btn = makeButton(this, W/2, H/2 + 40, "START", () => {
-    this.physics.resume();
+    hideOverlay();
     startGame.call(this);
   });
 }
@@ -291,8 +315,9 @@ function showGameOverOverlay() {
   overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
   overlayUI.title = this.add.text(W/2, H/2 - 80, "GAME OVER", { fontSize: "32px", fill: "#ff4444" }).setOrigin(0.5);
   overlayUI.tip = this.add.text(W/2, H/2 - 30, `Score: ${score}`, { fontSize: "16px", fill: "#fff" }).setOrigin(0.5);
+
   overlayUI.btn = makeButton(this, W/2, H/2 + 40, "RESTART", () => {
-    this.physics.resume();
+    hideOverlay();
     startGame.call(this);
   });
 }
@@ -303,9 +328,9 @@ function hideOverlay() {
 }
 
 function makeButton(scene, x, y, label, cb) {
-  const bg = scene.add.rectangle(x, y, 170, 54, 0x22c55e);
+  const bg = scene.add.rectangle(x, y, 170, 54, 0x22c55e).setStrokeStyle(2, 0xffffff, 1);
   const t = scene.add.text(x, y, label, { fontSize: "20px", fill: "#fff" }).setOrigin(0.5);
-  bg.setInteractive().on("pointerdown", cb);
+  bg.setInteractive({ useHandCursor: true }).on("pointerdown", cb);
   return { destroy: () => { bg.destroy(); t.destroy(); } };
 }
 
@@ -321,7 +346,7 @@ function setupTiltControls() {
 // ---------------- HELPERS ----------------
 
 function scaleSpriteToWidth(s, w) {
-  s.setScale(w / s.width);
+  s.setScale(w / (s.width || 1));
 }
 function lerp(a, b, t) {
   return a + (b - a) * t;
