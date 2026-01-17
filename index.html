@@ -29,6 +29,7 @@
       touch-action: none;
     }
 
+    /* iOS permission overlay */
     #ios-permission-overlay {
       position: fixed;
       inset: 0;
@@ -37,6 +38,7 @@
       justify-content: center;
       background: rgba(0,0,0,0.75);
       z-index: 9999;
+      -webkit-tap-highlight-color: transparent;
     }
     #ios-permission-overlay button {
       font-family: Arial, sans-serif;
@@ -45,30 +47,60 @@
       padding: 14px 18px;
       border-radius: 14px;
       border: 0;
+      cursor: pointer;
+    }
+    #ios-permission-overlay .hint {
+      margin-top: 10px;
+      font-family: Arial, sans-serif;
+      font-weight: 700;
+      font-size: 12px;
+      color: white;
+      text-align: center;
+      max-width: 280px;
+      line-height: 1.35;
+      opacity: 0.95;
+    }
+    #ios-permission-overlay .box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 18px;
     }
   </style>
 </head>
 <body>
 
+<!-- Only shown on iOS when permission is needed -->
 <div id="ios-permission-overlay">
-  <button id="ios-permission-btn">Tap to enable tilt</button>
+  <div class="box">
+    <button id="ios-permission-btn">Tap to enable tilt</button>
+    <div class="hint">
+      If you don’t see the popup or tilt stays dead:<br/>
+      iPhone Settings → Safari → Motion & Orientation Access → ON
+    </div>
+  </div>
 </div>
 
 <script>
 const W = 360;
 const H = 640;
 
+// 5 lanes across the road area
 const ROAD_LEFT = 50;
 const ROAD_RIGHT = 310;
 const LANE_COUNT = 5;
 
-const BASE_ROAD_SPEED = 500;
-const ENEMY_ROAD_GAP = 70;
+// pacing
+const BASE_ROAD_SPEED = 500;   // px/sec
+const ENEMY_ROAD_GAP = 70;     // enemy slightly faster than road
 
-const HITBOX_W = 0.7;
+// collision tuning (touch = bang)
+const HITBOX_W = 0.7;         // wider hitbox = easier crash
 const HITBOX_H = 0.8;
 
-const MIN_SPAWN_GAP_Y = 210;
+// ✅ anti-unfair-spawns tuning
+const MIN_SPAWN_GAP_Y = 210;  // bigger = fewer “walls” (try 190–240)
 
 const config = {
   type: Phaser.AUTO,
@@ -85,7 +117,9 @@ let score = 0, scoreText;
 let playing = false;
 let gameOver = false;
 
-let road1, road2, roadScale = 1;
+let road1, road2;
+let roadScale = 1;
+
 let roadScrollSpeed = 0;
 let enemySpeed = 0;
 
@@ -94,34 +128,107 @@ let difficulty = 0;
 let lastDifficultyBumpScore = 0;
 let lastSpawnLaneIndex = -1;
 
-const ENEMY_KEYS = ["enemy_black","enemy_blue","enemy_orange","enemy_green"];
+const ENEMY_KEYS = ["enemy_black", "enemy_blue", "enemy_orange", "enemy_green"];
 
+// tilt steering (+ keyboard sim)
 let rawGamma = 0;
 let gammaZero = 0;
 let gammaFiltered = 0;
 
 let neutralDeadzone = 4;
 let steerSensitivity = 0.9;
-let steerMaxSpeed = 300;
+let steerMaxSpeed = 300;   // px/sec
 let steerSmooth = 0.08;
 let maxGammaAbs = 25;
 
 let minX, maxX;
 let overlayUI = {};
 
-let collisionTriggered = false;
+// 🔊 score sound
+let scoreSound;
 
-// ---------------- Explosion (STATIC) ----------------
+// iOS permission bookkeeping
+let motionPermissionAsked = false;
+let motionGranted = false;
 
-function spawnExplosion(scene, x, y) {
-  const boom = scene.add.image(x, y, "explosion").setOrigin(0.5);
-  boom.setDepth(9999);
+// DOM overlay elements
+const iosOverlay = document.getElementById("ios-permission-overlay");
+const iosBtn = document.getElementById("ios-permission-btn");
 
-  const targetW = 90;
-  boom.setScale(targetW / (boom.width || 1));
+// ---------- iOS permission helpers ----------
+
+function iOSNeedsMotionPermission() {
+  const DME = window.DeviceMotionEvent;
+  const DOE = window.DeviceOrientationEvent;
+  return (DME && typeof DME.requestPermission === "function") ||
+         (DOE && typeof DOE.requestPermission === "function");
 }
 
-// ---------------- Phaser ----------------
+function showIOSOverlay(show) {
+  iosOverlay.style.display = show ? "flex" : "none";
+}
+
+function requestMotionPermissionFromDOMGesture() {
+  // Must be triggered directly by DOM gesture on iOS
+  const DME = window.DeviceMotionEvent;
+  const DOE = window.DeviceOrientationEvent;
+
+  return Promise.resolve()
+    .then(() => {
+      if (DME && typeof DME.requestPermission === "function") {
+        return DME.requestPermission().then(r => {
+          if (r !== "granted") throw new Error("motion denied");
+          return true;
+        });
+      }
+      return true;
+    })
+    .then(() => {
+      if (DOE && typeof DOE.requestPermission === "function") {
+        return DOE.requestPermission().then(r => {
+          if (r !== "granted") throw new Error("orientation denied");
+          return true;
+        });
+      }
+      return true;
+    });
+}
+
+function ensureMotionPermission() {
+  if (motionPermissionAsked) return Promise.resolve(motionGranted);
+  motionPermissionAsked = true;
+
+  if (!iOSNeedsMotionPermission()) {
+    motionGranted = true; // Android/desktop
+    return Promise.resolve(true);
+  }
+
+  // iOS: show overlay, wait for user to tap DOM button
+  showIOSOverlay(true);
+
+  return new Promise((resolve) => {
+    const onTap = () => {
+      // keep it synchronous as much as possible
+      requestMotionPermissionFromDOMGesture()
+        .then(() => {
+          motionGranted = true;
+          showIOSOverlay(false);
+          resolve(true);
+        })
+        .catch(() => {
+          motionGranted = false;
+          // keep overlay visible so user can try again after enabling Safari setting
+          // iOS can block this via Settings → Safari → Motion & Orientation Access :contentReference[oaicite:1]{index=1}
+          resolve(false);
+        });
+    };
+
+    iosBtn.addEventListener("click", onTap, { once: true });
+    iosBtn.addEventListener("touchend", onTap, { once: true, passive: false });
+  });
+}
+
+// ---------- Phaser scene ----------
 
 function preload() {
   this.load.image("car", "assets/car.png");
@@ -132,104 +239,221 @@ function preload() {
   this.load.image("enemy_orange", "assets/orangecar.png");
   this.load.image("enemy_green", "assets/greencar.png");
 
+  // UI images
   this.load.image("ui_start", "assets/ui_start.png");
   this.load.image("ui_logo", "assets/ui_logo.png");
   this.load.image("ui_gameover", "assets/gameover.png");
   this.load.image("ui_restart", "assets/restart.png");
 
-  this.load.image("explosion", "assets/explosion.png");
+  // 🔊 score +1 sound
+  this.load.audio("scoreSound", "assets/score.mp3");
 }
 
 function create() {
+  // build 5 evenly spaced lanes
   lanes = [];
   const roadWidth = ROAD_RIGHT - ROAD_LEFT;
   const laneSpacing = roadWidth / (LANE_COUNT - 1);
-  for (let i = 0; i < LANE_COUNT; i++) lanes.push(ROAD_LEFT + i * laneSpacing);
+  for (let i = 0; i < LANE_COUNT; i++) {
+    lanes.push(ROAD_LEFT + i * laneSpacing);
+  }
 
   minX = ROAD_LEFT;
   maxX = ROAD_RIGHT;
 
+  // road visuals
   road1 = this.add.image(W/2, H/2, "road");
   roadScale = Math.max(W / road1.width, H / road1.height);
   road1.setScale(roadScale);
 
-  road2 = this.add.image(W/2, H/2 - road1.height * roadScale, "road");
+  road2 = this.add.image(W/2, H/2 - (road1.height * roadScale), "road");
   road2.setScale(roadScale);
 
-  car = this.physics.add.sprite(lanes[2], H - 90, "car");
+  // player
+  car = this.physics.add.sprite(lanes[Math.floor(LANE_COUNT / 2)], H - 90, "car");
   scaleSpriteToWidth(car, 46);
+
+  // ✅ touch = bang: make hitbox almost the full sprite
   car.body.setSize(car.width * HITBOX_W, car.height * HITBOX_H, true);
 
   enemies = this.physics.add.group();
 
   scoreText = this.add.text(10, 10, "Score: 0", {
+    fontFamily: "Arial, sans-serif",
     fontSize: "18px",
     fontStyle: "bold",
-    color: "#fff"
-  }).setStroke("#000", 5);
-
-  this.physics.add.overlap(car, enemies, (player, enemy) => {
-    if (collisionTriggered || gameOver) return;
-    collisionTriggered = true;
-
-    spawnExplosion(this, (player.x + enemy.x) / 2, (player.y + enemy.y) / 2);
-    onGameOver.call(this);
+    color: "#ffffff"
   });
+  scoreText.setStroke("#000000", 5);
+  scoreText.setShadow(2, 2, "#000000", 8, true, true);
 
+  // collision
+  this.physics.add.overlap(car, enemies, () => onGameOver.call(this), null, this);
+
+  // 🔊 create sound
+  scoreSound = this.sound.add("scoreSound", { volume: 0.6 });
+
+  // Tilt listener
   setupTiltControls();
+
   showStartOverlay.call(this);
+
+  // ✅ keyboard fallback for browser testing (simulates tilt)
+  this.input.keyboard.on("keydown-LEFT", () => { rawGamma = -18; });
+  this.input.keyboard.on("keydown-RIGHT", () => { rawGamma = 18; });
+  this.input.keyboard.on("keyup-LEFT", () => { rawGamma = 0; });
+  this.input.keyboard.on("keyup-RIGHT", () => { rawGamma = 0; });
 }
 
 function update(time, delta) {
-  let dt = Math.min(delta / 1000, 0.12);
+  let dt = delta / 1000;
+  dt = Math.min(dt, 0.12);
 
   if (playing && !gameOver) {
     scrollRoad(dt);
+    maybeIncreaseDifficulty();
     spawnLogic(time);
     smoothSteer(dt);
 
-    enemies.children.iterate(e => e && (e.y += e.speed * dt));
+    enemies.children.iterate(e => {
+      if (!e) return;
+      e.y += (e.speed || enemySpeed) * dt;
+    });
   }
+
+  enemies.children.iterate(e => {
+    if (e && e.y > H + 120) {
+      e.destroy();
+      score++;
+      scoreText.setText("Score: " + score);
+      if (scoreSound) scoreSound.play();
+    }
+  });
 }
 
-// ---------------- Logic ----------------
+// ---------------- STEERING ----------------
 
 function smoothSteer(dt) {
   let g = Phaser.Math.Clamp(rawGamma - gammaZero, -maxGammaAbs, maxGammaAbs);
   gammaFiltered = lerp(gammaFiltered, g, steerSmooth);
 
   let gf = Math.abs(gammaFiltered) < neutralDeadzone ? 0 : gammaFiltered;
-  car.x = Phaser.Math.Clamp(
-    car.x + (gf / maxGammaAbs) * steerSensitivity * steerMaxSpeed * dt,
-    minX, maxX
-  );
+  const vx = (gf / maxGammaAbs) * steerSensitivity * steerMaxSpeed;
+
+  car.x += vx * dt;
+  car.x = Phaser.Math.Clamp(car.x, minX, maxX);
 }
 
+// ---------------- ROAD ----------------
+
 function scrollRoad(dt) {
-  road1.y += roadScrollSpeed * dt;
-  road2.y += roadScrollSpeed * dt;
+  const s = roadScrollSpeed * dt;
+  road1.y += s;
+  road2.y += s;
 
   const h = road1.height * roadScale;
   if (road1.y - H/2 >= h) road1.y = road2.y - h;
   if (road2.y - H/2 >= h) road2.y = road1.y - h;
 }
 
+// ---------------- DIFFICULTY ----------------
+
+function maybeIncreaseDifficulty() {
+  if (score - lastDifficultyBumpScore >= 5) {
+    lastDifficultyBumpScore = score;
+    difficulty++;
+
+    roadScrollSpeed += 15;
+    enemySpeed = roadScrollSpeed + ENEMY_ROAD_GAP;
+
+    steerMaxSpeed = Math.min(380, steerMaxSpeed + 8);
+  }
+}
+
+// ---------------- SPAWNING (ANTI-UNFAIR WALLS) ----------------
+
+function isLaneCurrentlyBlocked(laneIndex) {
+  const x = lanes[laneIndex];
+  let blocked = false;
+
+  enemies.children.iterate(e => {
+    if (!e) return;
+    if (Math.abs(e.x - x) < 8) {
+      if (e.y < MIN_SPAWN_GAP_Y) blocked = true;
+    }
+  });
+
+  return blocked;
+}
+
+function pickSafeLaneIndex(avoidLane = -1) {
+  let candidates = [];
+  for (let i = 0; i < LANE_COUNT; i++) {
+    if (i === avoidLane) continue;
+    if (!isLaneCurrentlyBlocked(i)) candidates.push(i);
+  }
+
+  if (candidates.length === 0) {
+    for (let i = 0; i < LANE_COUNT; i++) {
+      if (i !== avoidLane) candidates.push(i);
+    }
+  }
+
+  if (lastSpawnLaneIndex !== -1 && Math.random() < 0.7 && candidates.length > 1) {
+    const filtered = candidates.filter(i => i !== lastSpawnLaneIndex);
+    if (filtered.length > 0) candidates = filtered;
+  }
+
+  const pick = Phaser.Utils.Array.GetRandom(candidates);
+  lastSpawnLaneIndex = pick;
+  return pick;
+}
+
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  const dist = Phaser.Math.Between(600, 900);
-  nextSpawnAt = timeMs + (dist / enemySpeed) * 1000;
+  const minDist = Math.max(780 - difficulty * 60, 280);
+  const maxDist = Math.max(1150 - difficulty * 90, 360);
+  const dist = Phaser.Math.Between(minDist, maxDist);
 
-  const idx = Phaser.Math.Between(0, LANE_COUNT - 1);
+  const delay = (dist / enemySpeed) * 1000;
+  nextSpawnAt = timeMs + Math.max(240, delay);
+
+  const laneA = pickSafeLaneIndex();
+  spawnEnemyInLane(laneA);
+
+  if (difficulty >= 2) {
+    const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
+    if (Math.random() < doubleChance) {
+      const extraDelay = Phaser.Math.Between(120, 260);
+
+      setTimeout(() => {
+        if (!playing || gameOver) return;
+        const laneB = pickSafeLaneIndex(laneA);
+        if (laneB !== -1) spawnEnemyInLane(laneB);
+      }, extraDelay);
+    }
+  }
+}
+
+function spawnEnemyInLane(idx) {
+  if (!playing || gameOver) return;
+
   const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
   scaleSpriteToWidth(e, 46);
+
   e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
   e.speed = enemySpeed;
+  e.x += Phaser.Math.Between(-2, 2);
 }
+
+// ---------------- GAME FLOW ----------------
 
 function startGame() {
   score = 0;
-  collisionTriggered = false;
+  difficulty = 0;
+  lastDifficultyBumpScore = 0;
+  lastSpawnLaneIndex = -1;
 
   playing = true;
   gameOver = false;
@@ -240,13 +464,21 @@ function startGame() {
   enemies.clear(true, true);
   hideOverlay();
 
+  // Calibrate neutral at game start
   gammaZero = rawGamma;
+  gammaFiltered = 0;
+
+  nextSpawnAt = performance.now() + 800;
+  this.physics.resume();
 }
 
 function onGameOver() {
+  if (gameOver) return;
+
   gameOver = true;
   playing = false;
   roadScrollSpeed = 0;
+
   this.physics.pause();
   showGameOverOverlay.call(this);
 }
@@ -254,34 +486,87 @@ function onGameOver() {
 // ---------------- UI ----------------
 
 function showStartOverlay() {
-  overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start")
-    .setInteractive()
-    .on("pointerdown", () => startGame.call(this));
-}
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
 
-function showGameOverOverlay() {
-  overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart")
-    .setInteractive()
-    .on("pointerdown", () => startGame.call(this));
-}
+  overlayUI.logo = this.add.image(W/2, H/2 - 120, "ui_logo").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.logo, 260);
 
-function hideOverlay() {
-  Object.values(overlayUI).forEach(o => o.destroy && o.destroy());
-  overlayUI = {};
-}
+  overlayUI.tip = this.add.text(W/2, H/2 - 35, "Hold phone normally, then tap START", {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "14px",
+    fontStyle: "bold",
+    color: "#ffffff"
+  }).setOrigin(0.5);
+  overlayUI.tip.setStroke("#000000", 5);
+  overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
 
-// ---------------- Tilt ----------------
+  overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.btn, 220);
 
-function setupTiltControls() {
-  window.addEventListener("deviceorientation", e => {
-    if (e && typeof e.gamma === "number") rawGamma = e.gamma;
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+    // iOS: permission needs a DOM gesture; we show overlay if needed
+    ensureMotionPermission().then((ok) => {
+      if (!ok && iOSNeedsMotionPermission()) return;
+      startGame.call(this);
+    });
   });
 }
 
-// ---------------- Helpers ----------------
+function showGameOverOverlay() {
+  overlayUI.bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.45);
 
-function scaleSpriteToWidth(s, w) { s.setScale(w / s.width); }
-function lerp(a, b, t) { return a + (b - a) * t; }
+  overlayUI.title = this.add.image(W/2, H/2 - 120, "ui_gameover").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.title, 200);
+
+  overlayUI.tip = this.add.text(W/2, H/2 - 40, `Score: ${score}`, {
+    fontFamily: "Arial, sans-serif",
+    fontSize: "16px",
+    fontStyle: "bold",
+    color: "#ffffff"
+  }).setOrigin(0.5);
+  overlayUI.tip.setStroke("#000000", 5);
+  overlayUI.tip.setShadow(2, 2, "#000000", 8, true, true);
+
+  overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
+  scaleImageToWidth(overlayUI.btn, 240);
+
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+    ensureMotionPermission().then((ok) => {
+      if (!ok && iOSNeedsMotionPermission()) return;
+      startGame.call(this);
+    });
+  });
+}
+
+function hideOverlay() {
+  Object.values(overlayUI).forEach(o => o && o.destroy && o.destroy());
+  overlayUI = {};
+}
+
+// ---------------- TILT ----------------
+
+function setupTiltControls() {
+  document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  // Always collect gamma (calibration depends on it)
+  window.addEventListener("deviceorientation", (e) => {
+    if (e && typeof e.gamma === "number") rawGamma = e.gamma;
+  }, { passive: true });
+}
+
+// ---------------- HELPERS ----------------
+
+function scaleSpriteToWidth(s, w) {
+  s.setScale(w / (s.width || 1));
+}
+
+function scaleImageToWidth(img, w) {
+  img.setScale(w / (img.width || 1));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
 </script>
 
 </body>
