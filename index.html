@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Road Racer</title>
 
+  <!-- Safe on Android; helps iOS behave nicer -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="format-detection" content="telephone=no" />
+
   <script src="assets/phaser.min.js"></script>
 
   <style>
@@ -93,6 +98,10 @@ let overlayUI = {};
 // 🔊 score sound
 let scoreSound;
 
+// iOS permission bookkeeping (not shown to user)
+let motionPermissionAsked = false;
+let motionGranted = false;
+
 function preload() {
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
@@ -156,7 +165,9 @@ function create() {
   // 🔊 create sound
   scoreSound = this.sound.add("scoreSound", { volume: 0.6 });
 
+  // Tilt listener (works everywhere; iOS only feeds values after permission)
   setupTiltControls();
+
   showStartOverlay.call(this);
 
   // ✅ keyboard fallback for browser testing (simulates tilt)
@@ -347,6 +358,7 @@ function startGame() {
   enemies.clear(true, true);
   hideOverlay();
 
+  // Calibrate neutral at game start
   gammaZero = rawGamma;
   gammaFiltered = 0;
 
@@ -386,7 +398,11 @@ function showStartOverlay() {
 
   overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 220);
-  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", async () => {
+    // ✅ iOS requires permission; Android just returns true instantly.
+    await ensureMotionPermission();
+
     hideOverlay();
     startGame.call(this);
   });
@@ -409,7 +425,10 @@ function showGameOverOverlay() {
 
   overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 240);
-  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", async () => {
+    await ensureMotionPermission();
+
     hideOverlay();
     startGame.call(this);
   });
@@ -423,10 +442,43 @@ function hideOverlay() {
 // ---------------- TILT ----------------
 
 function setupTiltControls() {
-  window.addEventListener("deviceorientation", e => {
+  // Prevent iOS bounce/scroll from stealing touch
+  document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  // Listener works everywhere; iOS only provides real values after permission
+  window.addEventListener("deviceorientation", (e) => {
     if (!playing || gameOver) return;
-    rawGamma = e.gamma ?? 0;
+    if (e && typeof e.gamma === "number") rawGamma = e.gamma;
   }, { passive: true });
+}
+
+async function ensureMotionPermission() {
+  // Ask at most once per page load
+  if (motionPermissionAsked) return motionGranted;
+
+  motionPermissionAsked = true;
+
+  const DOE = window.DeviceOrientationEvent;
+  if (!DOE) {
+    motionGranted = false;
+    return false;
+  }
+
+  // iOS 13+ Safari: must ask
+  if (typeof DOE.requestPermission === "function") {
+    try {
+      const res = await DOE.requestPermission();
+      motionGranted = (res === "granted");
+      return motionGranted;
+    } catch (e) {
+      motionGranted = false;
+      return false;
+    }
+  }
+
+  // Android / desktop etc.
+  motionGranted = true;
+  return true;
 }
 
 // ---------------- HELPERS ----------------
