@@ -28,9 +28,59 @@
       margin: 0 auto;
       touch-action: none;
     }
+
+    /* iOS permission overlay */
+    #ios-permission-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.75);
+      z-index: 9999;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #ios-permission-overlay button {
+      font-family: Arial, sans-serif;
+      font-weight: 800;
+      font-size: 18px;
+      padding: 14px 18px;
+      border-radius: 14px;
+      border: 0;
+      cursor: pointer;
+    }
+    #ios-permission-overlay .hint {
+      margin-top: 10px;
+      font-family: Arial, sans-serif;
+      font-weight: 700;
+      font-size: 12px;
+      color: white;
+      text-align: center;
+      max-width: 280px;
+      line-height: 1.35;
+      opacity: 0.95;
+    }
+    #ios-permission-overlay .box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 18px;
+    }
   </style>
 </head>
 <body>
+
+<!-- Only shown on iOS when permission is needed -->
+<div id="ios-permission-overlay">
+  <div class="box">
+    <button id="ios-permission-btn">Tap to enable tilt</button>
+    <div class="hint">
+      If you don’t see the popup or tilt stays dead:<br/>
+      iPhone Settings → Safari → Motion & Orientation Access → ON
+    </div>
+  </div>
+</div>
 
 <script>
 const W = 360;
@@ -101,6 +151,85 @@ let scoreSound;
 let motionPermissionAsked = false;
 let motionGranted = false;
 
+// DOM overlay elements
+const iosOverlay = document.getElementById("ios-permission-overlay");
+const iosBtn = document.getElementById("ios-permission-btn");
+
+// ---------- iOS permission helpers ----------
+
+function iOSNeedsMotionPermission() {
+  const DME = window.DeviceMotionEvent;
+  const DOE = window.DeviceOrientationEvent;
+  return (DME && typeof DME.requestPermission === "function") ||
+         (DOE && typeof DOE.requestPermission === "function");
+}
+
+function showIOSOverlay(show) {
+  iosOverlay.style.display = show ? "flex" : "none";
+}
+
+function requestMotionPermissionFromDOMGesture() {
+  // Must be triggered directly by DOM gesture on iOS
+  const DME = window.DeviceMotionEvent;
+  const DOE = window.DeviceOrientationEvent;
+
+  return Promise.resolve()
+    .then(() => {
+      if (DME && typeof DME.requestPermission === "function") {
+        return DME.requestPermission().then(r => {
+          if (r !== "granted") throw new Error("motion denied");
+          return true;
+        });
+      }
+      return true;
+    })
+    .then(() => {
+      if (DOE && typeof DOE.requestPermission === "function") {
+        return DOE.requestPermission().then(r => {
+          if (r !== "granted") throw new Error("orientation denied");
+          return true;
+        });
+      }
+      return true;
+    });
+}
+
+function ensureMotionPermission() {
+  if (motionPermissionAsked) return Promise.resolve(motionGranted);
+  motionPermissionAsked = true;
+
+  if (!iOSNeedsMotionPermission()) {
+    motionGranted = true; // Android/desktop
+    return Promise.resolve(true);
+  }
+
+  // iOS: show overlay, wait for user to tap DOM button
+  showIOSOverlay(true);
+
+  return new Promise((resolve) => {
+    const onTap = () => {
+      // keep it synchronous as much as possible
+      requestMotionPermissionFromDOMGesture()
+        .then(() => {
+          motionGranted = true;
+          showIOSOverlay(false);
+          resolve(true);
+        })
+        .catch(() => {
+          motionGranted = false;
+          // keep overlay visible so user can try again after enabling Safari setting
+          // iOS can block this via Settings → Safari → Motion & Orientation Access :contentReference[oaicite:1]{index=1}
+          resolve(false);
+        });
+    };
+
+    iosBtn.addEventListener("click", onTap, { once: true });
+    iosBtn.addEventListener("touchend", onTap, { once: true, passive: false });
+  });
+}
+
+// ---------- Phaser scene ----------
+
 function preload() {
   this.load.image("car", "assets/car.png");
   this.load.image("road", "assets/road.png");
@@ -164,7 +293,9 @@ function create() {
   // 🔊 create sound
   scoreSound = this.sound.add("scoreSound", { volume: 0.6 });
 
+  // Tilt listener
   setupTiltControls();
+
   showStartOverlay.call(this);
 
   // ✅ keyboard fallback for browser testing (simulates tilt)
@@ -372,10 +503,13 @@ function showStartOverlay() {
   overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 220);
 
-  // IMPORTANT: iOS prefers "touchend"/"pointerup" for user-gesture permissions.
-  overlayUI.btn.setInteractive({ useHandCursor: true });
-  overlayUI.btn.on("pointerup", () => startFromUserGesture.call(this));
-  overlayUI.btn.on("pointerdown", (p) => { if (p && p.event) p.event.preventDefault?.(); });
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+    // iOS: permission needs a DOM gesture; we show overlay if needed
+    ensureMotionPermission().then((ok) => {
+      if (!ok && iOSNeedsMotionPermission()) return;
+      startGame.call(this);
+    });
+  });
 }
 
 function showGameOverOverlay() {
@@ -396,16 +530,11 @@ function showGameOverOverlay() {
   overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 240);
 
-  overlayUI.btn.setInteractive({ useHandCursor: true });
-  overlayUI.btn.on("pointerup", () => startFromUserGesture.call(this));
-  overlayUI.btn.on("pointerdown", (p) => { if (p && p.event) p.event.preventDefault?.(); });
-}
-
-function startFromUserGesture() {
-  // This function must stay synchronous at the top level of the gesture.
-  ensureMotionPermissionNow().then(() => {
-    hideOverlay();
-    startGame.call(this);
+  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => {
+    ensureMotionPermission().then((ok) => {
+      if (!ok && iOSNeedsMotionPermission()) return;
+      startGame.call(this);
+    });
   });
 }
 
@@ -419,59 +548,10 @@ function hideOverlay() {
 function setupTiltControls() {
   document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
 
-  // Always collect gamma when available (helps calibration timing)
+  // Always collect gamma (calibration depends on it)
   window.addEventListener("deviceorientation", (e) => {
     if (e && typeof e.gamma === "number") rawGamma = e.gamma;
   }, { passive: true });
-}
-
-function ensureMotionPermissionNow() {
-  if (motionPermissionAsked) return Promise.resolve(motionGranted);
-  motionPermissionAsked = true;
-
-  const DME = window.DeviceMotionEvent;
-  const DOE = window.DeviceOrientationEvent;
-
-  // Android/desktop: no gated permission
-  const needsPermission =
-    (DME && typeof DME.requestPermission === "function") ||
-    (DOE && typeof DOE.requestPermission === "function");
-
-  if (!needsPermission) {
-    motionGranted = true;
-    return Promise.resolve(true);
-  }
-
-  // iOS: request Motion first, then Orientation
-  return Promise.resolve()
-    .then(() => {
-      if (DME && typeof DME.requestPermission === "function") {
-        return DME.requestPermission().then(res => {
-          if (res !== "granted") throw new Error("motion denied");
-          return true;
-        });
-      }
-      return true;
-    })
-    .then(() => {
-      if (DOE && typeof DOE.requestPermission === "function") {
-        return DOE.requestPermission().then(res2 => {
-          if (res2 !== "granted") throw new Error("orientation denied");
-          return true;
-        });
-      }
-      return true;
-    })
-    .then(() => {
-      motionGranted = true;
-      return true;
-    })
-    .catch(() => {
-      motionGranted = false;
-      // If this happens, iPhone likely has Safari setting disabled:
-      // Settings > Safari > Motion & Orientation Access (must be ON)
-      return false;
-    });
 }
 
 // ---------------- HELPERS ----------------
