@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Road Racer</title>
 
-  <!-- Safe on Android; helps iOS behave nicer -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="format-detection" content="telephone=no" />
@@ -98,7 +97,7 @@ let overlayUI = {};
 // 🔊 score sound
 let scoreSound;
 
-// iOS permission bookkeeping (not shown to user)
+// iOS permission bookkeeping
 let motionPermissionAsked = false;
 let motionGranted = false;
 
@@ -165,9 +164,7 @@ function create() {
   // 🔊 create sound
   scoreSound = this.sound.add("scoreSound", { volume: 0.6 });
 
-  // Tilt listener (works everywhere; iOS only feeds values after permission)
   setupTiltControls();
-
   showStartOverlay.call(this);
 
   // ✅ keyboard fallback for browser testing (simulates tilt)
@@ -178,7 +175,6 @@ function create() {
 }
 
 function update(time, delta) {
-  // IMPORTANT: not too strict, prevents “touch speeds it up” feeling
   let dt = delta / 1000;
   dt = Math.min(dt, 0.12);
 
@@ -188,14 +184,12 @@ function update(time, delta) {
     spawnLogic(time);
     smoothSteer(dt);
 
-    // ✅ SMOOTH enemy movement (dt-based)
     enemies.children.iterate(e => {
       if (!e) return;
       e.y += (e.speed || enemySpeed) * dt;
     });
   }
 
-  // scoring when enemies pass bottom
   enemies.children.iterate(e => {
     if (e && e.y > H + 120) {
       e.destroy();
@@ -247,17 +241,13 @@ function maybeIncreaseDifficulty() {
 
 // ---------------- SPAWNING (ANTI-UNFAIR WALLS) ----------------
 
-// lane considered blocked if there is already an enemy near the top in that lane
 function isLaneCurrentlyBlocked(laneIndex) {
   const x = lanes[laneIndex];
   let blocked = false;
 
   enemies.children.iterate(e => {
     if (!e) return;
-
-    // same lane (allow tiny randomness wiggle)
     if (Math.abs(e.x - x) < 8) {
-      // if enemy is still near top, don't spawn another here
       if (e.y < MIN_SPAWN_GAP_Y) blocked = true;
     }
   });
@@ -265,7 +255,6 @@ function isLaneCurrentlyBlocked(laneIndex) {
   return blocked;
 }
 
-// pick a safe lane; if none safe, fall back to any lane except avoidLane
 function pickSafeLaneIndex(avoidLane = -1) {
   let candidates = [];
   for (let i = 0; i < LANE_COUNT; i++) {
@@ -273,14 +262,12 @@ function pickSafeLaneIndex(avoidLane = -1) {
     if (!isLaneCurrentlyBlocked(i)) candidates.push(i);
   }
 
-  // if everything blocked, allow any lane so game continues
   if (candidates.length === 0) {
     for (let i = 0; i < LANE_COUNT; i++) {
       if (i !== avoidLane) candidates.push(i);
     }
   }
 
-  // avoid repeating last lane most of the time
   if (lastSpawnLaneIndex !== -1 && Math.random() < 0.7 && candidates.length > 1) {
     const filtered = candidates.filter(i => i !== lastSpawnLaneIndex);
     if (filtered.length > 0) candidates = filtered;
@@ -294,7 +281,6 @@ function pickSafeLaneIndex(avoidLane = -1) {
 function spawnLogic(timeMs) {
   if (timeMs < nextSpawnAt) return;
 
-  // spacing in pixels between spawns (far early, closer later)
   const minDist = Math.max(780 - difficulty * 60, 280);
   const maxDist = Math.max(1150 - difficulty * 90, 360);
   const dist = Phaser.Math.Between(minDist, maxDist);
@@ -302,11 +288,9 @@ function spawnLogic(timeMs) {
   const delay = (dist / enemySpeed) * 1000;
   nextSpawnAt = timeMs + Math.max(240, delay);
 
-  // Spawn 1 enemy in a safe lane
   const laneA = pickSafeLaneIndex();
   spawnEnemyInLane(laneA);
 
-  // doubles ramp up (but must still be fair)
   if (difficulty >= 2) {
     const doubleChance = Math.min(0.10 + difficulty * 0.05, 0.45);
     if (Math.random() < doubleChance) {
@@ -314,11 +298,7 @@ function spawnLogic(timeMs) {
 
       setTimeout(() => {
         if (!playing || gameOver) return;
-
-        // pick a different safe lane for the second car
         const laneB = pickSafeLaneIndex(laneA);
-
-        // if laneB somehow invalid, skip second spawn
         if (laneB !== -1) spawnEnemyInLane(laneB);
       }, extraDelay);
     }
@@ -331,13 +311,8 @@ function spawnEnemyInLane(idx) {
   const e = enemies.create(lanes[idx], -120, Phaser.Utils.Array.GetRandom(ENEMY_KEYS));
   scaleSpriteToWidth(e, 46);
 
-  // ✅ touch = bang hitbox
   e.body.setSize(e.width * HITBOX_W, e.height * HITBOX_H, true);
-
-  // ✅ store speed, move with dt in update()
   e.speed = enemySpeed;
-
-  // tiny wiggle
   e.x += Phaser.Math.Between(-2, 2);
 }
 
@@ -363,8 +338,6 @@ function startGame() {
   gammaFiltered = 0;
 
   nextSpawnAt = performance.now() + 800;
-
-  // ensure physics is running after restart
   this.physics.resume();
 }
 
@@ -399,13 +372,10 @@ function showStartOverlay() {
   overlayUI.btn = this.add.image(W/2, H/2 + 50, "ui_start").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 220);
 
-  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", async () => {
-    // ✅ iOS requires permission; Android just returns true instantly.
-    await ensureMotionPermission();
-
-    hideOverlay();
-    startGame.call(this);
-  });
+  // IMPORTANT: iOS prefers "touchend"/"pointerup" for user-gesture permissions.
+  overlayUI.btn.setInteractive({ useHandCursor: true });
+  overlayUI.btn.on("pointerup", () => startFromUserGesture.call(this));
+  overlayUI.btn.on("pointerdown", (p) => { if (p && p.event) p.event.preventDefault?.(); });
 }
 
 function showGameOverOverlay() {
@@ -426,9 +396,14 @@ function showGameOverOverlay() {
   overlayUI.btn = this.add.image(W/2, H/2 + 55, "ui_restart").setOrigin(0.5);
   scaleImageToWidth(overlayUI.btn, 240);
 
-  overlayUI.btn.setInteractive({ useHandCursor: true }).on("pointerdown", async () => {
-    await ensureMotionPermission();
+  overlayUI.btn.setInteractive({ useHandCursor: true });
+  overlayUI.btn.on("pointerup", () => startFromUserGesture.call(this));
+  overlayUI.btn.on("pointerdown", (p) => { if (p && p.event) p.event.preventDefault?.(); });
+}
 
+function startFromUserGesture() {
+  // This function must stay synchronous at the top level of the gesture.
+  ensureMotionPermissionNow().then(() => {
     hideOverlay();
     startGame.call(this);
   });
@@ -442,43 +417,61 @@ function hideOverlay() {
 // ---------------- TILT ----------------
 
 function setupTiltControls() {
-  // Prevent iOS bounce/scroll from stealing touch
   document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
 
-  // Listener works everywhere; iOS only provides real values after permission
+  // Always collect gamma when available (helps calibration timing)
   window.addEventListener("deviceorientation", (e) => {
-    if (!playing || gameOver) return;
     if (e && typeof e.gamma === "number") rawGamma = e.gamma;
   }, { passive: true });
 }
 
-async function ensureMotionPermission() {
-  // Ask at most once per page load
-  if (motionPermissionAsked) return motionGranted;
-
+function ensureMotionPermissionNow() {
+  if (motionPermissionAsked) return Promise.resolve(motionGranted);
   motionPermissionAsked = true;
 
+  const DME = window.DeviceMotionEvent;
   const DOE = window.DeviceOrientationEvent;
-  if (!DOE) {
-    motionGranted = false;
-    return false;
+
+  // Android/desktop: no gated permission
+  const needsPermission =
+    (DME && typeof DME.requestPermission === "function") ||
+    (DOE && typeof DOE.requestPermission === "function");
+
+  if (!needsPermission) {
+    motionGranted = true;
+    return Promise.resolve(true);
   }
 
-  // iOS 13+ Safari: must ask
-  if (typeof DOE.requestPermission === "function") {
-    try {
-      const res = await DOE.requestPermission();
-      motionGranted = (res === "granted");
-      return motionGranted;
-    } catch (e) {
+  // iOS: request Motion first, then Orientation
+  return Promise.resolve()
+    .then(() => {
+      if (DME && typeof DME.requestPermission === "function") {
+        return DME.requestPermission().then(res => {
+          if (res !== "granted") throw new Error("motion denied");
+          return true;
+        });
+      }
+      return true;
+    })
+    .then(() => {
+      if (DOE && typeof DOE.requestPermission === "function") {
+        return DOE.requestPermission().then(res2 => {
+          if (res2 !== "granted") throw new Error("orientation denied");
+          return true;
+        });
+      }
+      return true;
+    })
+    .then(() => {
+      motionGranted = true;
+      return true;
+    })
+    .catch(() => {
       motionGranted = false;
+      // If this happens, iPhone likely has Safari setting disabled:
+      // Settings > Safari > Motion & Orientation Access (must be ON)
       return false;
-    }
-  }
-
-  // Android / desktop etc.
-  motionGranted = true;
-  return true;
+    });
 }
 
 // ---------------- HELPERS ----------------
